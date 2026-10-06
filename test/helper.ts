@@ -27,7 +27,7 @@ export async function serveStorageApp(injectUser: "x-user" | "always-1" = "x-use
   );
   for (const e of entries) e.raw = [...rawPaths].some((p) => p === e.p);
 
-  const app = new Elysia({ aot: false });
+  const app = new Elysia();
   for (const e of entries) {
     const routeHook = e.raw ? { parse: "none" } as any : undefined;
     const routeHandler = async (ctx: any) => {

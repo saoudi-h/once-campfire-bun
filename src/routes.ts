@@ -548,7 +548,7 @@ export function registerRoutes(app: RouteCollector) {
         if (json)
           return res
             .status(201)
-            .json(serializeMessage(messageById(message!.id), req));
+            .json(serializeMessage(messageById(message!.id)!, req));
         return turbo(
           res,
           "append",
@@ -824,7 +824,7 @@ function registerBoosts(app: RouteCollector) {
       if (!user)
         return bot ? res.sendStatus(401) : res.redirect("/session/new");
       if (!bot && req.authenticatedByBot) return res.sendStatus(403);
-      const message = required(messageById(req.params.messageId)),
+      const message = required(messageById(req.params.messageId || "")),
         room = required(roomForUser(user, message.room_id));
       if (req.params.roomId && Number(req.params.roomId) !== room.id)
         return res.sendStatus(404);
@@ -916,7 +916,7 @@ function registerUsers(app: RouteCollector) {
   app.get("/autocompletable/users", login, (req, res) => {
     let users;
     if (req.query.room_id) {
-      const room = required(roomForUser(req.user, req.query.room_id));
+      const room = required(roomForUser(req.user, req.query.room_id as string));
       users = all(
         "SELECT u.* FROM users u JOIN memberships m ON m.user_id=u.id WHERE m.room_id=? AND u.status=0 ORDER BY lower(u.name)",
         room.id,
@@ -1030,7 +1030,7 @@ function registerUsers(app: RouteCollector) {
     },
   );
   app.get("/users/:id", login, (req, res) => {
-    const user = required(userById(req.params.id));
+    const user = required(userById(req.params.id || ""));
     send(req, res, "user", {
       Subject: userData(user),
       CanAdminister: req.user.role === 1,
@@ -1038,7 +1038,7 @@ function registerUsers(app: RouteCollector) {
     });
   });
   app.all("/users/:userId/ban", login, admin, (req, res) => {
-    const user = required(userById(req.params.userId));
+    const user = required(userById(req.params.userId || ""));
     if (req.method === "DELETE") {
       run("DELETE FROM bans WHERE user_id=?", user.id);
       run("UPDATE users SET status=0,updated_at=? WHERE id=?", now(), user.id);
