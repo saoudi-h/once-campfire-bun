@@ -14,9 +14,10 @@ const rails = await import("../src/rails.ts");
 const { serveApp } = await import("./helper.ts");
 const { fragment, render } = await import("../src/rendering.ts");
 let admin, member, outsider, open, privateRoom;
-before(() => {
+before(async () => {
   initialize();
   const t = now();
+  const digest = await domain.hashPassword("password");
   run(
     "INSERT INTO accounts(name,join_code,created_at,updated_at) VALUES(?,?,?,?)",
     "Testing",
@@ -27,18 +28,18 @@ before(() => {
   admin = domain.createUser({
     name: "Admin",
     email_address: "admin@example.test",
-    password: "password",
+    password_digest: digest,
     role: 1,
   });
   member = domain.createUser({
     name: "Member",
     email_address: "member@example.test",
-    password: "password",
+    password_digest: digest,
   });
   outsider = domain.createUser({
     name: "Outside",
     email_address: "outside@example.test",
-    password: "password",
+    password_digest: digest,
   });
   const make = (name, type) => {
     const r = run(
@@ -56,14 +57,15 @@ before(() => {
   domain.grantMemberships(open, [admin.id, member.id, outsider.id]);
   domain.grantMemberships(privateRoom, [admin.id, member.id]);
 });
-test("synchronous nested transactions rollback together", () => {
+test("synchronous nested transactions rollback together", async () => {
   const n = get("SELECT count(*) n FROM users").n;
+  const digest = await domain.hashPassword("password");
   assert.throws(() =>
     transaction(() => {
       domain.createUser({
         name: "Temp",
         email_address: "temp@example.test",
-        password: "password",
+        password_digest: digest,
       });
       throw new Error("rollback");
     }),

@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import bcrypt from "bcryptjs";
 import { all, get, run, transaction, now, type Row } from "./db.ts";
 import {
   roomForUser,
@@ -9,6 +8,7 @@ import {
   messagesForRoom,
   grantMemberships,
   createUser,
+  hashPassword,
   createMessage,
   updateMessage,
   deleteMessage,
@@ -238,14 +238,18 @@ export function registerRoutes(app: RouteCollector) {
       ? send(req, res, "login", { Email: req.query.email_address || "" })
       : res.redirect("/first_run"),
   );
-  app.post("/session", (req, res) => {
+  app.post("/session", async (req, res) => {
     const user = get(
       "SELECT * FROM users WHERE email_address=? AND status=0",
       req.body.email_address || "",
     );
     if (
       !user?.password_digest ||
-      !bcrypt.compareSync(req.body.password || "", user.password_digest)
+      !(await Bun.password.verify(
+        req.body.password || "",
+        user.password_digest,
+        "bcrypt",
+      ))
     )
       return res
         .status(401)
@@ -284,6 +288,9 @@ export function registerRoutes(app: RouteCollector) {
     if (req.method !== "POST") return res.sendStatus(405);
     if (file(req, "user[avatar]"))
       await validateUpload(file(req, "user[avatar]"));
+    // Hash outside the transaction: Bun.password is async and
+    // domain transactions must stay synchronous.
+    const digest = await hashPassword(value(req, "user", "password") as string);
     const user = transaction(() => {
       const time = now();
       run(
@@ -297,7 +304,7 @@ export function registerRoutes(app: RouteCollector) {
         createUser({
           name: value(req, "user", "name") as string,
           email_address: value(req, "user", "email_address") as string,
-          password: value(req, "user", "password") as string,
+          password_digest: digest,
           role: 1,
         }),
       );
@@ -334,7 +341,9 @@ export function registerRoutes(app: RouteCollector) {
       createUser({
         name: value(req, "user", "name") as string,
         email_address: value(req, "user", "email_address") as string,
-        password: value(req, "user", "password") as string,
+        password_digest: await hashPassword(
+          value(req, "user", "password") as string,
+        ),
       }),
     );
     if (file(req, "user[avatar]"))
@@ -968,7 +977,7 @@ function registerUsers(app: RouteCollector) {
         for (const name of ["name", "bio", "email_address"])
           values[name] = value(req, "user", name, values[name]);
         const password = value(req, "user", "password");
-        if (password) values.password_digest = bcrypt.hashSync(password, 12);
+        if (password) values.password_digest = await hashPassword(password);
         run(
           "UPDATE users SET name=?,bio=?,email_address=?,password_digest=?,updated_at=? WHERE id=?",
           values.name,

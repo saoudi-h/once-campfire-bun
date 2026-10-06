@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import bcrypt from "bcryptjs";
 import { all, get, run, transaction, now, onCommit, type Row } from "./db.ts";
 import {
   sanitize,
@@ -99,20 +98,27 @@ export function grantMemberships(room: Row, userIds: Array<string | number>) {
       timestamp,
     );
 }
+// Bun.password runs bcrypt in a worker thread, so hashing never
+// blocks the event loop (bcryptjs hashSync did). Digests are
+// standard bcrypt ($2a$/$2b$), interchangeable with the Rails
+// reference app's.
+export async function hashPassword(password: string): Promise<string> {
+  return Bun.password.hash(password, { algorithm: "bcrypt", cost: 12 });
+}
 export function createUser({
   name,
   email_address = null,
-  password = "",
+  password_digest = null,
   role = 0,
   bot_token = null,
 }: {
   name?: string;
   email_address?: string | null;
-  password?: string;
+  password_digest?: string | null;
   role?: number;
   bot_token?: string | null;
 }): Row | undefined {
-  if (!name?.trim() || (role !== 2 && (!email_address || !password)))
+  if (!name?.trim() || (role !== 2 && (!email_address || !password_digest)))
     throw Object.assign(new Error("Name, email and password required"), {
       status: 422,
     });
@@ -122,7 +128,7 @@ export function createUser({
       "INSERT INTO users(name,email_address,password_digest,role,bot_token,status,created_at,updated_at) VALUES(?,?,?,?,?,0,?,?)",
       name,
       email_address,
-      bcrypt.hashSync(password, 12),
+      password_digest,
       role,
       bot_token,
       time,

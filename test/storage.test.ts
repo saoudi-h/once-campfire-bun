@@ -362,12 +362,12 @@ test("native audio/video/PDF analysis and previews use real ffmpeg/poppler", asy
 });
 test("actual queued administrator webhook posts Rails JSON and persists bot reply without a loop", async () => {
   const http = await import("node:http");
-  const { createUser, grantMemberships, createMessage } =
+  const { createUser, hashPassword, grantMemberships, createMessage } =
     await import("../src/domain.ts");
   const creator = createUser({
     name: "Human",
     email_address: "human@example.test",
-    password: "password123",
+    password_digest: await hashPassword("password123"),
   });
   const bot = createUser({ name: "Robot", role: 2, bot_token: "bot-token" });
   const time = now();
