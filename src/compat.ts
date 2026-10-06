@@ -48,20 +48,20 @@ export interface CompatReq {
 export interface CompatRes {
   statusCode: number;
   headers: Record<string, string | string[]>;
-  body: any;
+  body: unknown;
   status(code: number): CompatRes;
-  set(h: Record<string, string | string[]> | string, v?: string): CompatRes;
+  set(h: Record<string, string | string[] | undefined> | string, v?: string): CompatRes;
   type(t: string): CompatRes;
-  json(o: any): CompatRes;
-  send(b: any): CompatRes;
-  end(b?: any): CompatRes;
+  json(o: unknown): CompatRes;
+  send(b: unknown): CompatRes;
+  end(b?: unknown): CompatRes;
   redirect(url: string): CompatRes;
   sendStatus(code: number): CompatRes;
 }
 
 export function parseCookies(header = ""): Record<string, string> {
   const result: Record<string, string> = Object.create(null);
-  for (const item of header.split(";")) {
+  for (const item of (header ?? "").split(";")) {
     const i = item.indexOf("=");
     if (i < 0) continue;
     const k = item.slice(0, i).trim();
@@ -72,12 +72,12 @@ export function parseCookies(header = ""): Record<string, string> {
 
 export function authenticateCookies(header: string | undefined) {
   try {
-    const token = rails.verifyCookie("session_token", parseCookies(header).session_token);
+    const token = rails.verifyCookie("session_token", parseCookies(header).session_token ?? "");
     return get("SELECT s.*,u.name,u.role,u.status FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND u.status=0", token);
   } catch { return null; }
 }
 
-const mimeFor: Record<string, string> = {
+const mimeFor: Record<string, string | undefined> = {
   html: "text/html; charset=utf-8",
   json: "application/json; charset=utf-8",
   text: "text/plain; charset=utf-8",
@@ -88,27 +88,31 @@ const mimeFor: Record<string, string> = {
 };
 
 export function makeRes(): CompatRes {
-  const res: CompatRes = {
+  const res: CompatRes & { headers: Record<string, string | string[]> } = {
     statusCode: 200,
     headers: {},
     body: undefined,
     status(code: number) { res.statusCode = code; return res; },
-    set(h: any, v?: string) {
-      if (typeof h === "string") res.headers[h.toLowerCase()] = v!;
-      else for (const [k, val] of Object.entries(h)) res.headers[k.toLowerCase()] = val as string;
+    set(h: Record<string, string | string[] | undefined> | string, v?: string) {
+      if (typeof h === "string") {
+        if (v !== undefined) res.headers[h.toLowerCase()] = v;
+      } else for (const [k, val] of Object.entries(h)) {
+        if (val !== undefined) res.headers[k.toLowerCase()] = val;
+      }
       return res;
     },
     type(t: string) {
-      res.headers["content-type"] = mimeFor[t] || (t.includes("/") ? t : mimeFor.html);
+      const mime = mimeFor[t] ?? (t.includes("/") ? t : mimeFor.html);
+      if (mime) res.headers["content-type"] = mime;
       return res;
     },
-    json(o: any) {
-      res.headers["content-type"] ||= mimeFor.json;
+    json(o: unknown) {
+      res.headers["content-type"] ||= mimeFor.json!;
       res.body = JSON.stringify(o);
       return res;
     },
-    send(b: any) { if (b !== undefined) res.body = b; return res; },
-    end(b?: any) { if (b !== undefined) res.body = b; return res; },
+    send(b: unknown) { if (b !== undefined) res.body = b; return res; },
+    end(b?: unknown) { if (b !== undefined) res.body = b; return res; },
     redirect(url: string) { res.statusCode = 302; res.headers["location"] = url; res.body = ""; return res; },
     sendStatus(code: number) { res.statusCode = code; res.body = ""; return res; },
   };
@@ -160,7 +164,7 @@ export async function resolveFiles(files?: CompatFile[]): Promise<CompatFile[]> 
   return files;
 }
 
-export function clientIp(headers: Record<string, any>, remote: string): string {
+export function clientIp(headers: Record<string, string | undefined>, remote: string): string {
   const trusted = (process.env.TRUSTED_PROXIES || "").split(",").filter(Boolean);
   const fwd = headers["x-forwarded-for"];
   if (trusted.includes(remote) && typeof fwd === "string" && fwd) {
@@ -224,10 +228,10 @@ export function buildReq(ctx: any, rawBody: any, remoteAddr: string): CompatReq 
   req.account = get("SELECT * FROM accounts ORDER BY id LIMIT 1");
   req.authenticatedByBot = false;
   const botMatch = req.path.match(/^\/rooms\/\d+\/([^/]+)\/messages(?:\/|$)/);
-  const botKey = (req.query.bot_key as string) || botMatch?.[1];
+  const botKey = (req.query.bot_key as string | undefined) || botMatch?.[1];
   if (!req.user && botKey) {
     const m = String(botKey).trim().match(/^(\d+)-(.+)$/);
-    if (m) {
+    if (m && m[1] && m[2]) {
       req.user = get("SELECT * FROM users WHERE id=? AND bot_token=? AND status=0 AND role=2", Number(m[1]), m[2]);
       req.authenticatedByBot = Boolean(req.user);
     }
@@ -259,10 +263,10 @@ export function guardRequest(req: CompatReq): number {
   if (req.method === "PUT" && req.path.startsWith("/rails/active_storage/disk/")) {
     try {
       const p = rails.verify(req.path.split("/").at(-1)!, "ActiveStorage", "blob_token");
-      if (p && typeof p === "object" && (p as any).key) return 0;
+      if (p && typeof p === "object" && (p as { key?: unknown }).key) return 0;
     } catch {}
   }
-  const origin = req.headers.origin;
+  const origin = req.headers.origin ?? "";
   if (origin && origin !== req.protocol + "://" + req.get("host")) return 422;
   if (!rails.validCsrf(rails.decode64(req.session._csrf_token), req.headers["x-csrf-token"] || req.body?.authenticity_token, req.path, req.method)) return 422;
   return 0;

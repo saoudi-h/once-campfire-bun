@@ -212,7 +212,7 @@ export function sign(
   if (!padded) payload = payload.replace(/=+$/, "");
   return payload + "--" + mac(payload, salt, algorithm);
 }
-export function verify(raw, salt, purpose = null, algorithm = "sha1") {
+export function verify(raw: unknown, salt: string, purpose: string | null = null, algorithm = "sha1"): unknown {
   if (typeof raw !== "string") throw new Error("invalid message");
   const i = raw.lastIndexOf("--");
   if (i < 0) throw new Error("invalid message");
@@ -231,7 +231,7 @@ function cookieEnvelope(name, value, expiry = null) {
     },
   });
 }
-export function signCookie(name, value, expiry = null) {
+export function signCookie(name: string, value: unknown, expiry: Date | null = null): string {
   const p = b64(cookieEnvelope(name, value, expiry));
   return p + "--" + mac(p, "signed cookie");
 }
@@ -255,7 +255,7 @@ export function verifyCookie(name, raw) {
     throw new Error("invalid cookie signature");
   return cookieValue(decode64(p), name);
 }
-export function encryptCookie(name, value, expiry = null, options = {}) {
+export function encryptCookie(name: string, value: unknown, expiry: Date | null = null, options: { nonce?: Buffer } = {}): string {
   const nonce = options.nonce || randomBytes(12),
     cipher = createCipheriv(
       "aes-256-gcm",
