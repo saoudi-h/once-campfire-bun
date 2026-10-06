@@ -43,7 +43,7 @@ export interface CompatReq {
   clearSessionToken?: boolean;
   lastRoom?: number;
   get(name: string): string | undefined;
-  accepts(...types: string[]): string | false;
+  accepts(...types: Array<string | string[]>): string | false;
   is(type: string): boolean;
 }
 

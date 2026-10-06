@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
-import { all, get, run, transaction, now, onCommit } from "./db.ts";
+import { all, get, run, transaction, now, onCommit, type Row } from "./db.ts";
 import {
   sanitize,
   plainText,
@@ -11,24 +11,34 @@ import { publish } from "./cable.ts";
 import { stream } from "./rails.ts";
 import { fragment, messageData } from "./rendering.ts";
 import { enqueue } from "./jobs.ts";
-export const userById = (id) =>
+export const userById = (id: string | number) =>
   get("SELECT * FROM users WHERE id=?", Number(id));
-export const roomsForUser = (id) =>
+export const roomsForUser = (id: string | number) =>
   all(
     "SELECT r.*,m.involvement,m.unread_at FROM rooms r JOIN memberships m ON m.room_id=r.id WHERE m.user_id=? ORDER BY lower(r.name)",
     Number(id),
   );
-export const roomForUser = (user, id) =>
+export const roomForUser = (
+  user: Row | string | number | null | undefined,
+  id: string | number | null | undefined,
+) =>
   get(
     "SELECT r.* FROM rooms r JOIN memberships m ON m.room_id=r.id WHERE m.user_id=? AND r.id=?",
-    Number(user?.id ?? user),
+    Number((user as Row | null | undefined)?.id ?? user),
     Number(id),
   );
 const presentation =
   "SELECT m.*,u.name AS creator_name,u.bio AS creator_bio,u.updated_at AS creator_updated_at,r.name AS room_name,r.type AS room_type FROM messages m JOIN users u ON u.id=m.creator_id JOIN rooms r ON r.id=m.room_id";
-export const messageById = (id) =>
+export const messageById = (id: string | number) =>
   get(presentation + " WHERE m.id=?", Number(id));
-export function messagesForRoom(id, { before, after, around } = {}) {
+export function messagesForRoom(
+  id: string | number,
+  {
+    before,
+    after,
+    around,
+  }: { before?: any; after?: any; around?: any } = {},
+) {
   if (around) {
     const pivot = get(
       "SELECT * FROM messages WHERE id=? AND room_id=?",
@@ -43,7 +53,7 @@ export function messagesForRoom(id, { before, after, around } = {}) {
         Number(id),
         pivot.created_at,
       ).reverse(),
-      messageById(pivot.id),
+      messageById(pivot.id)!,
       ...all(
         presentation +
           " WHERE m.room_id=? AND m.created_at>? ORDER BY m.created_at ASC LIMIT 40",
@@ -77,7 +87,7 @@ export function messagesForRoom(id, { before, after, around } = {}) {
   );
   return after ? rows : rows.reverse();
 }
-export function grantMemberships(room, userIds) {
+export function grantMemberships(room: Row, userIds: Array<string | number>) {
   const timestamp = now();
   for (const id of userIds)
     run(
@@ -95,7 +105,13 @@ export function createUser({
   password = "",
   role = 0,
   bot_token = null,
-}) {
+}: {
+  name?: string;
+  email_address?: string | null;
+  password?: string;
+  role?: number;
+  bot_token?: string | null;
+}): Row | undefined {
   if (!name?.trim() || (role !== 2 && (!email_address || !password)))
     throw Object.assign(new Error("Name, email and password required"), {
       status: 422,
@@ -114,11 +130,11 @@ export function createUser({
     );
     const user = userById(Number(result.lastInsertRowid));
     for (const room of all("SELECT * FROM rooms WHERE type='Rooms::Open'"))
-      grantMemberships(room, [user.id]);
+      grantMemberships(room, [user!.id]);
     return user;
   });
 }
-export function indexMessage(id, body, filename = "") {
+export function indexMessage(id: string | number, body: string, filename = "") {
   run("DELETE FROM message_search_index WHERE rowid=?", Number(id));
   run(
     "INSERT INTO message_search_index(rowid,body) VALUES(?,?)",
@@ -126,7 +142,12 @@ export function indexMessage(id, body, filename = "") {
     plainText(body) || filename,
   );
 }
-export function createMessage(roomId, userId, body = "", clientId = null) {
+export function createMessage(
+  roomId: string | number,
+  userId: string | number,
+  body: any = "",
+  clientId: any = null,
+) {
   return transaction(() => {
     if (
       !get(
@@ -160,7 +181,7 @@ export function createMessage(roomId, userId, body = "", clientId = null) {
       get(
         "SELECT id FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
         id,
-      ).id,
+      )!.id,
       content,
       Number(userId),
     );
@@ -182,9 +203,9 @@ export function createMessage(roomId, userId, body = "", clientId = null) {
   });
 }
 export function updateMessage(
-  message,
-  body = null,
-  userId = message.creator_id,
+  message: Row,
+  body: any = null,
+  userId: any = message.creator_id,
 ) {
   transaction(() => {
     const time = now();
@@ -201,7 +222,7 @@ export function updateMessage(
         get(
           "SELECT id FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
           message.id,
-        ).id,
+        )!.id,
         content,
         userId,
       );

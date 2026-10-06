@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
-import { all, get, run, transaction, now } from "./db.ts";
+import { all, get, run, transaction, now, type Row } from "./db.ts";
 import {
   roomForUser,
   roomsForUser,
@@ -40,11 +40,16 @@ import {
   purgeBlob,
 } from "./storage.ts";
 import { enqueue } from "./jobs.ts";
-import type { CompatReq, CompatRes } from "./compat.ts";
+import type { CompatReq, CompatRes, CompatFile } from "./compat.ts";
 
-/** Express-style handler: reads CompatReq, writes CompatRes. */
+/** Express-style handler: reads CompatReq, writes CompatRes.
+ *
+ * The trailing rest parameter keeps this assignable FROM middleware-style
+ * `(req, res, next)` functions while still contextually typing inline
+ * `(req, res) => ...` arrows passed to RouteCollector (union signatures do
+ * not contextually type arrows in TypeScript). */
 export interface Handler {
-  (req: CompatReq, res: CompatRes, next?: () => Promise<void> | void): unknown;
+  (req: CompatReq, res: CompatRes, ...rest: any[]): unknown;
 }
 
 /** Express-style middleware: must call next() to continue the chain. */
@@ -54,26 +59,25 @@ export interface Middleware {
 
 /** Subset of Express app registration consumed by registerRoutes. */
 export interface RouteCollector {
-  get(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
-  post(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
-  put(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
-  patch(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
-  delete(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
-  all(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
+  get(path: string | string[], ...handlers: Handler[]): void;
+  post(path: string | string[], ...handlers: Handler[]): void;
+  put(path: string | string[], ...handlers: Handler[]): void;
+  patch(path: string | string[], ...handlers: Handler[]): void;
+  delete(path: string | string[], ...handlers: Handler[]): void;
+  all(path: string | string[], ...handlers: Handler[]): void;
 }
 
 export type { CompatReq, CompatRes };
-import nunjucks from "nunjucks";
 const token = () => randomBytes(18).toString("base64url");
-const origin = (req) => `${req.protocol}://${req.get("host")}`;
-export function value(req, group, key, fallback = "") {
+const origin = (req: CompatReq) => `${req.protocol}://${req.get("host")}`;
+export function value(req: CompatReq, group: string, key: string, fallback: unknown = "") {
   const result =
     req.body?.[group]?.[key] ?? req.body?.[`${group}[${key}]`] ?? fallback;
   return Array.isArray(result) ? result.at(-1) : result;
 }
-const send = (req, res, screen, data = {}) =>
+const send = (req: CompatReq, res: CompatRes, screen: string, data: Record<string, unknown> = {}) =>
   res.type("html").send(render(req, screen, data));
-const can = (user, row) => user.role === 1 || row.creator_id === user.id;
+const can = (user: Row, row: Row) => user.role === 1 || row.creator_id === user.id;
 function login(req: CompatReq, res: CompatRes, next: () => void) {
   if (!req.user) {
     req.session.return_to_after_authenticating = req.originalUrl;
@@ -85,11 +89,11 @@ function login(req: CompatReq, res: CompatRes, next: () => void) {
 function admin(req: CompatReq, res: CompatRes, next: () => void) {
   return req.user.role === 1 ? next() : res.sendStatus(403);
 }
-function required(row) {
-  if (!row) throw Object.assign(new Error("Not found"), { status: 404 });
+function required<T>(row: T | undefined | null): T {
+  if (row === undefined || row === null) throw Object.assign(new Error("Not found"), { status: 404 });
   return row;
 }
-function startSession(req, user) {
+function startSession(req: CompatReq, user: Row) {
   const time = now(),
     t = token();
   run(
@@ -105,15 +109,15 @@ function startSession(req, user) {
   req.user = user;
   req.newSessionToken = t;
 }
-const file = (req, name) => req.files?.find((f) => f.fieldname === name);
-function attachment(req) {
+const file = (req: CompatReq, name: string) => req.files?.find((f) => f.fieldname === name);
+function attachment(req: CompatReq) {
   return (
     file(req, "message[attachment]") ||
     file(req, "attachment") ||
     value(req, "message", "attachment", req.body?.attachment ?? null)
   );
 }
-async function prepareMessageAttachment(req, item) {
+async function prepareMessageAttachment(req: CompatReq, item: unknown) {
   if (!item) return null;
   let blob;
   try {
@@ -137,10 +141,10 @@ async function prepareMessageAttachment(req, item) {
       );
       purgeBlob(blob.id);
     }
-    throw Object.assign(error, { status: 422 });
+    throw Object.assign(error as Error, { status: 422 });
   }
 }
-function attachMessage(message, item, blob) {
+function attachMessage(message: Row, item: unknown, blob: Row | null | undefined) {
   if (item === null) return [];
   const old = removeAttachment("Message", message.id, "attachment");
   if (blob) {
@@ -163,7 +167,7 @@ function attachMessage(message, item, blob) {
   indexMessage(message.id, body, blob?.filename || "");
   return old;
 }
-function cleanupPrepared(blob) {
+function cleanupPrepared(blob: Row | null | undefined) {
   if (blob) {
     run(
       "DELETE FROM active_storage_attachments WHERE record_type='Campfire::PendingUpload' AND record_id=0 AND blob_id=?",
@@ -172,20 +176,20 @@ function cleanupPrepared(blob) {
     purgeBlob(blob.id);
   }
 }
-async function replaceImage(upload, type, id, name) {
+async function replaceImage(upload: CompatFile | undefined, type: string, id: number, name: string) {
   await validateUpload(upload);
   const blob = replaceAttachment(upload, type, id, name);
   for (const removed of blob.removedBlobIds || [])
     enqueue("purge", { blob_id: removed });
   return blob;
 }
-export function serializeMessage(m, req) {
+export function serializeMessage(m: Row, req: CompatReq) {
   const body =
       get(
         "SELECT body FROM action_text_rich_texts WHERE record_type='Message' AND record_id=? AND name='body'",
         m.id,
       )?.body || "",
-    user = userById(m.creator_id);
+    user = required(userById(m.creator_id));
   return {
     id: m.id,
     created_at: iso(m.created_at),
@@ -203,21 +207,21 @@ export function serializeMessage(m, req) {
     url: `${origin(req)}/rooms/${m.room_id}/messages/${m.id}`,
   };
 }
-const turbo = (res, action, target, body = "") =>
+const turbo = (res: CompatRes, action: string, target: string, body = "") =>
   res
     .type("text/vnd.turbo-stream.html")
     .send(
       `<turbo-stream action="${action}" target="${target}"><template>${body}</template></turbo-stream>`,
     );
-function botUser(req) {
-  const [id, ...bits] = req.params.botKey.split("-");
+function botUser(req: CompatReq) {
+  const [id, ...bits] = (req.params.botKey || "").split("-");
   return get(
     "SELECT * FROM users WHERE id=? AND bot_token=? AND role=2 AND status=0",
     Number(id) || 0,
     bits.join("-"),
   );
 }
-export function registerRoutes(app) {
+export function registerRoutes(app: RouteCollector) {
   app.get("/", (req, res) => {
     if (!get("SELECT id FROM accounts LIMIT 1"))
       return res.redirect("/first_run");
@@ -280,8 +284,7 @@ export function registerRoutes(app) {
     if (req.method !== "POST") return res.sendStatus(405);
     if (file(req, "user[avatar]"))
       await validateUpload(file(req, "user[avatar]"));
-    let user;
-    transaction(() => {
+    const user = transaction(() => {
       const time = now();
       run(
         "INSERT INTO accounts(name,join_code,created_at,updated_at) VALUES(?,?,?,?)",
@@ -290,24 +293,27 @@ export function registerRoutes(app) {
         time,
         time,
       );
-      user = createUser({
-        name: value(req, "user", "name"),
-        email_address: value(req, "user", "email_address"),
-        password: value(req, "user", "password"),
-        role: 1,
-      });
+      const created = required(
+        createUser({
+          name: value(req, "user", "name") as string,
+          email_address: value(req, "user", "email_address") as string,
+          password: value(req, "user", "password") as string,
+          role: 1,
+        }),
+      );
       const result = run(
         "INSERT INTO rooms(name,type,creator_id,created_at,updated_at) VALUES(?,?,?,?,?)",
         "All Talk",
         "Rooms::Open",
-        user.id,
+        created.id,
         time,
         time,
       );
       grantMemberships(
         { id: Number(result.lastInsertRowid), type: "Rooms::Open" },
-        [user.id],
+        [created.id],
       );
+      return created;
     });
     if (file(req, "user[avatar]"))
       await replaceImage(file(req, "user[avatar]"), "User", user.id, "avatar");
@@ -316,7 +322,7 @@ export function registerRoutes(app) {
   });
   app.all("/join/:code", async (req, res) => {
     const account = required(
-      get("SELECT * FROM accounts WHERE join_code=?", req.params.code),
+      get("SELECT * FROM accounts WHERE join_code=?", req.params.code || ""),
     );
     if (req.user) return res.redirect("/");
     if (req.method === "GET")
@@ -324,11 +330,13 @@ export function registerRoutes(app) {
     if (req.method !== "POST") return res.sendStatus(405);
     if (file(req, "user[avatar]"))
       await validateUpload(file(req, "user[avatar]"));
-    const user = createUser({
-      name: value(req, "user", "name"),
-      email_address: value(req, "user", "email_address"),
-      password: value(req, "user", "password"),
-    });
+    const user = required(
+      createUser({
+        name: value(req, "user", "name") as string,
+        email_address: value(req, "user", "email_address") as string,
+        password: value(req, "user", "password") as string,
+      }),
+    );
     if (file(req, "user[avatar]"))
       await replaceImage(file(req, "user[avatar]"), "User", user.id, "avatar");
     startSession(req, user);
@@ -362,7 +370,7 @@ export function registerRoutes(app) {
     ["/rooms/:roomId", "/rooms/:roomId/@:messageId"],
     login,
     (req, res) => {
-      if (!/^\d+$/.test(req.params.roomId)) return res.sendStatus(404);
+      if (!/^\d+$/.test(req.params.roomId || "")) return res.sendStatus(404);
       const room = roomForUser(req.user, req.params.roomId);
       if (!room) return res.redirect("/");
       req.lastRoom = room.id;
@@ -380,7 +388,7 @@ export function registerRoutes(app) {
         ),
         LoadedAt: epoch(room.updated_at),
         Stream: rails.signStream(rails.stream(room)),
-        Involvement: membership.involvement,
+        Involvement: membership!.involvement,
         Invitation: false,
       });
     },
@@ -440,18 +448,18 @@ export function registerRoutes(app) {
         req.path.endsWith(".json");
       if (req.method === "GET") {
         if (req.path.endsWith("/edit")) {
-          if (!can(user, message)) return res.sendStatus(403);
+          if (!can(user, message!)) return res.sendStatus(403);
           return send(req, res, "edit-message", {
-            Messages: messageData([message]),
+            Messages: messageData([message!]),
             Room: roomData(room, user),
             Body:
               get(
                 "SELECT body FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
-                message.id,
+                message!.id,
               )?.body || "",
           });
         }
-        const rows = message ? [message] : messagesForRoom(room.id, req.query);
+        const rows: Row[] = message ? [message] : messagesForRoom(room.id, req.query);
         if (!rows.length) return res.sendStatus(204);
         if (json) {
           if (isBot) {
@@ -461,11 +469,11 @@ export function registerRoutes(app) {
                 get(
                   "SELECT count(*) AS n FROM messages WHERE room_id=?",
                   room.id,
-                ).n,
+                )!.n,
               ),
             );
             const direction = req.query.after ? "after" : "before",
-              anchor = direction === "after" ? rows.at(-1) : rows[0];
+              anchor = (direction === "after" ? rows.at(-1) : rows[0])!;
             if (
               get(
                 `SELECT id FROM messages WHERE room_id=? AND created_at${direction === "after" ? ">" : "<"}? LIMIT 1`,
@@ -511,7 +519,7 @@ export function registerRoutes(app) {
                 body,
                 value(req, "message", "client_message_id") || null,
               );
-              attachMessage(message, item, blob);
+              attachMessage(message!, item, blob);
             }),
           );
         } catch (error) {
@@ -525,18 +533,18 @@ export function registerRoutes(app) {
             .status(201)
             .set(
               "Location",
-              `${origin(req)}/rooms/${room.id}/messages/${message.id}`,
+              `${origin(req)}/rooms/${room.id}/messages/${message!.id}`,
             )
             .end();
         if (json)
           return res
             .status(201)
-            .json(serializeMessage(messageById(message.id), req));
+            .json(serializeMessage(messageById(message!.id), req));
         return turbo(
           res,
           "append",
           `messages_rooms_${room.type.split("::").pop().toLowerCase()}_${room.id}`,
-          fragment("message", messageData([messageById(message.id)])[0]),
+          fragment("message", messageData([messageById(message!.id)])[0]),
         );
       }
       if (["PATCH", "PUT"].includes(req.method)) {
@@ -545,8 +553,8 @@ export function registerRoutes(app) {
         try {
           stagedFiles(() =>
             transaction(() => {
-              obsolete = attachMessage(message, item, blob);
-              message = updateMessage(message, body, user.id);
+              obsolete = attachMessage(message!, item, blob);
+              message = updateMessage(message!, body, user.id);
             }),
           );
         } catch (error) {
@@ -556,14 +564,14 @@ export function registerRoutes(app) {
         for (const id of obsolete || []) enqueue("purge", { blob_id: id });
         publishMessage(message, "replace");
         return json
-          ? res.json(serializeMessage(message, req))
-          : res.redirect(`/rooms/${room.id}/messages/${message.id}`);
+          ? res.json(serializeMessage(message!, req))
+          : res.redirect(`/rooms/${room.id}/messages/${message!.id}`);
       }
       if (req.method === "DELETE") {
-        deleteMessage(message);
+        deleteMessage(message!);
         return json
           ? res.sendStatus(204)
-          : turbo(res, "remove", "message_" + message.client_message_id);
+          : turbo(res, "remove", "message_" + message!.client_message_id);
       }
       res.sendStatus(405);
     },
@@ -616,7 +624,7 @@ export function registerRoutes(app) {
           "SELECT involvement FROM memberships WHERE room_id=? AND user_id=?",
           room.id,
           req.user.id,
-        ).involvement,
+        )!.involvement,
       });
     },
   );
@@ -625,7 +633,7 @@ export function registerRoutes(app) {
   registerAccount(app);
   registerSearch(app);
 }
-function registerRoomForms(app) {
+function registerRoomForms(app: RouteCollector) {
   app.all(
     [
       "/rooms/:kind/new",
@@ -635,7 +643,7 @@ function registerRoomForms(app) {
     ],
     login,
     (req, res, next) => {
-      const { kind, id } = req.params;
+      const { kind = "", id } = req.params;
       if (!["opens", "closeds", "directs"].includes(kind)) return next();
       let room = id ? roomForUser(req.user, id) : null;
       if (id && !room) return res.sendStatus(404);
@@ -649,7 +657,7 @@ function registerRoomForms(app) {
       )
         return res.sendStatus(405);
       const type =
-        "Rooms::" + kind.slice(0, -1)[0].toUpperCase() + kind.slice(1, -1);
+        "Rooms::" + kind.slice(0, -1)[0]!.toUpperCase() + kind.slice(1, -1);
       if (room && req.method === "DELETE") {
         if (kind !== "directs" && !can(req.user, room))
           return res.sendStatus(403);
@@ -658,7 +666,7 @@ function registerRoomForms(app) {
       }
       if (room && req.method === "GET" && !req.path.endsWith("/edit"))
         return res.redirect("/rooms/" + room.id);
-      let settings = {};
+      let settings: Record<string, any> = {};
       try {
         settings = JSON.parse(req.account?.settings || "{}");
       } catch {}
@@ -760,21 +768,21 @@ function registerRoomForms(app) {
         }
         const current = all(
           "SELECT user_id FROM memberships WHERE room_id=?",
-          room.id,
+          room!.id,
         );
         for (const m of current)
           if (!ids.includes(m.user_id))
             run(
               "DELETE FROM memberships WHERE room_id=? AND user_id=?",
-              room.id,
+              room!.id,
               m.user_id,
             );
-        grantMemberships(room, ids);
+        grantMemberships(room!, ids);
       });
-      room = get("SELECT * FROM rooms WHERE id=?", room.id);
+      room = get("SELECT * FROM rooms WHERE id=?", room!.id);
       for (const m of all(
         "SELECT user_id FROM memberships WHERE room_id=?",
-        room.id,
+        room!.id,
       )) {
         const stream =
           kind === "opens"
@@ -788,11 +796,11 @@ function registerRoomForms(app) {
           `<turbo-stream action="prepend" target="${kind === "directs" ? "direct_rooms" : "shared_rooms"}"><template>${fragment(kind === "directs" ? "sidebar-direct" : "sidebar-shared", dto)}</template></turbo-stream>`,
         );
       }
-      res.redirect("/rooms/" + room.id);
+      res.redirect("/rooms/" + room!.id);
     },
   );
 }
-function registerBoosts(app) {
+function registerBoosts(app: RouteCollector) {
   app.all(
     [
       "/messages/:messageId/boosts/new",
@@ -830,7 +838,7 @@ function registerBoosts(app) {
           id = Number(result.lastInsertRowid);
         run("UPDATE messages SET updated_at=? WHERE id=?", time, message.id);
         const dto = messageData([message])[0],
-          boost = dto.Boosts.find((b) => b.ID === id);
+          boost = dto.Boosts.find((b: Row) => b.ID === id);
         publish(
           rails.stream(room),
           `<turbo-stream action="append" target="boosts_message_${message.client_message_id}" maintain_scroll="true"><template>${fragment("boost", boost)}</template></turbo-stream>`,
@@ -879,7 +887,7 @@ function registerBoosts(app) {
     },
   );
 }
-function deactivate(user) {
+function deactivate(user: Row) {
   transaction(() => {
     run(
       "DELETE FROM memberships WHERE user_id=? AND room_id IN(SELECT id FROM rooms WHERE type<>'Rooms::Direct')",
@@ -895,7 +903,7 @@ function deactivate(user) {
     );
   });
 }
-function registerUsers(app) {
+function registerUsers(app: RouteCollector) {
   app.get("/autocompletable/users", login, (req, res) => {
     let users;
     if (req.query.room_id) {
@@ -951,7 +959,7 @@ function registerUsers(app) {
       if (["PATCH", "PUT"].includes(req.method)) {
         if (file(req, "user[avatar]"))
           await validateUpload(file(req, "user[avatar]"));
-        const values = {
+        const values: Record<string, any> = {
           name: user.name,
           bio: user.bio,
           email_address: user.email_address,
@@ -984,7 +992,7 @@ function registerUsers(app) {
             "SELECT id FROM memberships WHERE room_id=? AND user_id=?",
             r.id,
             user.id,
-          ).id,
+          )!.id,
           Room: { ...roomData(r, user), Involvement: r.involvement },
           Involvement: r.involvement,
         })),
@@ -1049,19 +1057,20 @@ function registerUsers(app) {
 }
 import nunjucks from "nunjucks";
 import sharp from "sharp";
-async function validateUpload(upload) {
+async function validateUpload(upload?: CompatFile | Row | null) {
   if (
+    upload &&
     upload.mimetype?.startsWith("image/") &&
     upload.mimetype !== "image/svg+xml"
   )
     try {
-      await sharp(upload.buffer).metadata();
+      await sharp(upload.buffer!).metadata();
     } catch (error) {
-      throw Object.assign(error, { status: 422 });
+      throw Object.assign(error as Error, { status: 422 });
     }
 }
-const newSafe = (value) => new nunjucks.runtime.SafeString(value);
-function registerAccount(app) {
+const newSafe = (value: string) => new nunjucks.runtime.SafeString(value);
+function registerAccount(app: RouteCollector) {
   app.all(
     ["/account", "/account/edit", "/account/users"],
     login,
@@ -1156,7 +1165,7 @@ function registerAccount(app) {
           )
         : null;
       if (req.method === "DELETE") {
-        deactivate(bot);
+        deactivate(bot!);
         return res.redirect("/account/bots");
       }
       if (req.path.endsWith("/key") && req.method === "PUT") {
@@ -1164,9 +1173,9 @@ function registerAccount(app) {
           "UPDATE users SET bot_token=?,updated_at=? WHERE id=?",
           randomBytes(6).toString("hex"),
           now(),
-          bot.id,
+          bot!.id,
         );
-        return res.redirect("/account/bots/" + bot.id + "/edit");
+        return res.redirect("/account/bots/" + bot!.id + "/edit");
       }
       if (["POST", "PATCH", "PUT"].includes(req.method)) {
         if (file(req, "user[avatar]"))
@@ -1181,16 +1190,16 @@ function registerAccount(app) {
             );
           else
             bot = createUser({
-              name: value(req, "user", "name"),
+              name: value(req, "user", "name") as string,
               role: 2,
               bot_token: randomBytes(6).toString("hex"),
-            });
+            })!;
           const url = value(req, "user", "webhook_url");
-          run("DELETE FROM webhooks WHERE user_id=?", bot.id);
+          run("DELETE FROM webhooks WHERE user_id=?", bot!.id);
           if (url)
             run(
               "INSERT INTO webhooks(user_id,url,created_at,updated_at) VALUES(?,?,?,?)",
-              bot.id,
+              bot!.id,
               url,
               now(),
               now(),
@@ -1200,7 +1209,7 @@ function registerAccount(app) {
           await replaceImage(
             file(req, "user[avatar]"),
             "User",
-            bot.id,
+            bot!.id,
             "avatar",
           );
         return res.redirect("/account/bots");
@@ -1249,7 +1258,7 @@ function registerAccount(app) {
     res.redirect("/account/edit");
   });
 }
-function registerSearch(app) {
+function registerSearch(app: RouteCollector) {
   app.all(["/searches", "/searches/clear"], login, (req, res) => {
     const query = String(req.query.q ?? req.body?.q ?? "")
       .replace(/[^\p{L}\p{N}_]/gu, " ")
@@ -1285,7 +1294,7 @@ function registerSearch(app) {
       }
       return res.redirect("/searches?" + new URLSearchParams({ q: query }));
     }
-    let rows = [];
+    let rows: Row[] = [];
     if (query) {
       const ids = all(
         "SELECT m.id FROM messages m JOIN message_search_index idx ON idx.rowid=m.id JOIN memberships ms ON ms.room_id=m.room_id WHERE ms.user_id=? AND idx.body MATCH ? ORDER BY m.created_at DESC LIMIT 100",
@@ -1296,7 +1305,7 @@ function registerSearch(app) {
           .join(" "),
       ).map((r) => r.id);
       rows = ids
-        .map(messageById)
+        .map((id) => messageById(id)!)
         .sort((a, b) => a.created_at.localeCompare(b.created_at));
     }
     send(req, res, "search", {

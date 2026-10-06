@@ -298,7 +298,7 @@ function modelPurpose(model, purpose) {
     .toLowerCase();
   return underscored + (purpose ? "/" + purpose : "");
 }
-export function signedId(model, id, purpose = "", expiry = null) {
+export function signedId(model: string, id: unknown, purpose = "", expiry: Date | string | number | null = null) {
   return model === "ActiveStorage::Blob"
     ? sign(id, "ActiveStorage", purpose || "blob_id", expiry)
     : sign(
