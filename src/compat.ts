@@ -74,7 +74,7 @@ export function parseCookies(header = ""): Record<string, string> {
 
 export function authenticateCookies(header: string | undefined) {
   try {
-    const token = rails.verifyCookie("session_token", parseCookies(header).session_token ?? "");
+    const token = rails.verifyCookie("session_token", parseCookies(header).session_token ?? "") as string;
     return get("SELECT s.*,u.name,u.role,u.status FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND u.status=0", token);
   } catch { return null; }
 }

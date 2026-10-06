@@ -38,6 +38,7 @@ import {
   stagedFiles,
   processAttachment,
   purgeBlob,
+  type StoredUpload,
 } from "./storage.ts";
 import { enqueue } from "./jobs.ts";
 import type { CompatReq, CompatRes, CompatFile } from "./compat.ts";
@@ -123,9 +124,9 @@ async function prepareMessageAttachment(req: CompatReq, item: unknown) {
   try {
     blob =
       typeof item === "object"
-        ? storeUpload(item, "Campfire::PendingUpload", 0, "attachment")
+        ? storeUpload(item as StoredUpload, "Campfire::PendingUpload", 0, "attachment")
         : attachSigned(
-            item,
+            item as string,
             "Campfire::PendingUpload",
             0,
             "attachment",
@@ -178,7 +179,7 @@ function cleanupPrepared(blob: Row | null | undefined) {
 }
 async function replaceImage(upload: CompatFile | undefined, type: string, id: number, name: string) {
   await validateUpload(upload);
-  const blob = replaceAttachment(upload, type, id, name);
+  const blob = replaceAttachment(upload as StoredUpload, type, id, name);
   for (const removed of blob.removedBlobIds || [])
     enqueue("purge", { blob_id: removed });
   return blob;
@@ -553,7 +554,7 @@ export function registerRoutes(app: RouteCollector) {
           res,
           "append",
           `messages_rooms_${room.type.split("::").pop().toLowerCase()}_${room.id}`,
-          fragment("message", messageData([messageById(message!.id)])[0]),
+          fragment("message", messageData([messageById(message!.id)!])[0]!),
         );
       }
       if (["PATCH", "PUT"].includes(req.method)) {
@@ -602,7 +603,7 @@ export function registerRoutes(app: RouteCollector) {
               action === "append"
                 ? `messages_rooms_${room.type.split("::").pop().toLowerCase()}_${room.id}`
                 : "message_" + m.client_message_id;
-          return `<turbo-stream action="${action}" target="${target}"><template>${fragment("message", messageData([messageById(m.id)])[0])}</template></turbo-stream>`;
+          return `<turbo-stream action="${action}" target="${target}"><template>${fragment("message", messageData([messageById(m.id)!])[0]!)}</template></turbo-stream>`;
         })
         .join(""),
     );
@@ -799,7 +800,7 @@ function registerRoomForms(app: RouteCollector) {
             : Buffer.from(`gid://campfire/User/${m.user_id}`)
                 .toString("base64")
                 .replace(/=+$/, "") + ":rooms";
-        const dto = { ...roomData(room, userById(m.user_id)), Unread: false };
+        const dto = { ...roomData(room!, userById(m.user_id)!), Unread: false };
         publish(
           stream,
           `<turbo-stream action="prepend" target="${kind === "directs" ? "direct_rooms" : "shared_rooms"}"><template>${fragment(kind === "directs" ? "sidebar-direct" : "sidebar-shared", dto)}</template></turbo-stream>`,
@@ -846,7 +847,7 @@ function registerBoosts(app: RouteCollector) {
           ),
           id = Number(result.lastInsertRowid);
         run("UPDATE messages SET updated_at=? WHERE id=?", time, message.id);
-        const dto = messageData([message])[0],
+        const dto = messageData([message])[0]!,
           boost = dto.Boosts.find((b: Row) => b.ID === id);
         publish(
           rails.stream(room),
