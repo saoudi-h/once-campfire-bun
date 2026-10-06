@@ -1,26 +1,29 @@
 import nunjucks from "nunjucks";
 import { readFileSync, existsSync } from "node:fs";
-import { all, get } from "./db.ts";
+import { all, get, type Row } from "./db.ts";
 import * as rails from "./rails.ts";
 import { escape, plainText, renderBody } from "./richtext.ts";
 import { blobUrl, representationUrl } from "./storage.ts";
+import type { CompatReq } from "./compat.ts";
 const env = new nunjucks.Environment(
   new nunjucks.FileSystemLoader(
     new URL("../templates/", import.meta.url).pathname,
   ),
   { autoescape: true },
 );
-const safe = (value) => new nunjucks.runtime.SafeString(value || "");
-function generated(name, fallback = "") {
+const safe = (value: string) => new nunjucks.runtime.SafeString(value || "");
+function generated(name: string, fallback = "") {
   const path = new URL(`../assets/generated/${name}`, import.meta.url);
   return existsSync(path) ? readFileSync(path, "utf8") : fallback;
 }
-let manifest;
-export function asset(name) {
-  manifest ||= JSON.parse(generated("manifest.json", "{}"));
+let manifest: Record<string, { digested_path?: string }> | undefined;
+export function asset(name: string) {
+  manifest ||= JSON.parse(
+    generated("manifest.json", "{}"),
+  ) as Record<string, { digested_path?: string }>;
   return "/assets/" + (manifest[name]?.digested_path || name);
 }
-export function epoch(value) {
+export function epoch(value: unknown) {
   return value
     ? new Date(
         String(value).replace(" ", "T") +
@@ -28,22 +31,22 @@ export function epoch(value) {
       ).getTime() || 0
     : 0;
 }
-export function iso(value) {
+export function iso(value: unknown) {
   return new Date(epoch(value)).toISOString();
 }
-export function avatar(id, updated) {
+export function avatar(id: unknown, updated: unknown) {
   return (
     `/users/${rails.signedId("User", Number(id), "avatar")}/avatar` +
     (updated ? "?v=" + versionTime(updated) : "")
   );
 }
-export function versionTime(value) {
+export function versionTime(value: unknown) {
   return new Date(epoch(value))
     .toISOString()
     .replace(/[-:T]/g, "")
     .slice(0, 14);
 }
-export function userData(user) {
+export function userData(user: Row | null | undefined) {
   if (!user) return { ID: 0, Role: 0, Name: "" };
   return {
     ID: user.id,
@@ -58,7 +61,7 @@ export function userData(user) {
     Administer: user.role === 1,
   };
 }
-export function roomData(room, user) {
+export function roomData(room: Row, user: Row | null | undefined) {
   const kind = (room.type || "Rooms::Open").split("::").pop().toLowerCase();
   const members =
     kind === "direct"
@@ -76,14 +79,14 @@ export function roomData(room, user) {
     Type: room.type,
     UpdatedAt: room.updated_at,
     CreatorID: room.creator_id,
-    DOM: (prefix) => `${prefix}_rooms_${kind}_${room.id}`,
+    DOM: (prefix: string) => `${prefix}_rooms_${kind}_${room.id}`,
     Noun: kind === "direct" ? "ping" : "room",
     EditPath: `/rooms/${kind}s/${room.id}/edit`,
     Members: members.map(userData),
     Label: members.map((u) => u.name.split(" ")[0]).join(", "),
   };
 }
-export function messageData(messages, origin = "") {
+export function messageData(messages: Row[], origin = "") {
   if (!messages.length) return [];
   const ids = messages.map((m) => m.id),
     placeholders = ids.map(() => "?").join(",");
@@ -114,9 +117,9 @@ export function messageData(messages, origin = "") {
         (blob.content_type || "").startsWith("image/") ||
         blob.content_type === "application/pdf"
       )
-        body = `<a href="${url}" data-lightbox-target="image" data-action="lightbox#open" data-lightbox-url-value="${url}?disposition=attachment"><img class="message__attachment" src="${representationUrl(blob)}" alt="${name}" loading="lazy"></a>`;
+        body = `<a href="${url}" data-lightbox-target="image" data-action="lightbox#open" data-lightbox-url-value="${url}?disposition=attachment"><img class="message__attachment" src="${representationUrl(blob, [1200, 800], undefined!)}" alt="${name}" loading="lazy"></a>`;
       else if ((blob.content_type || "").startsWith("video/"))
-        body = `<video src="${url}" poster="${representationUrl(blob)}" controls class="message__attachment"></video>`;
+        body = `<video src="${url}" poster="${representationUrl(blob, [1200, 800], undefined!)}" controls class="message__attachment"></video>`;
       else body = `<a href="${url}?disposition=attachment">${name}</a>`;
     }
     return {
@@ -154,10 +157,10 @@ export function messageData(messages, origin = "") {
     };
   });
 }
-const translations = JSON.parse(
-  readFileSync(new URL("./translations.json", import.meta.url)),
+const translations: Record<string, Array<[string, string]>> = JSON.parse(
+  readFileSync(new URL("./translations.json", import.meta.url), "utf8"),
 );
-const reactions = [
+const reactions: Array<[string, string]> = [
   ["👍", "Thumbs up"],
   ["👏", "Clapping"],
   ["👋", "Waving hand"],
@@ -173,23 +176,28 @@ for (const [name, fn] of Object.entries({
   epoch,
   iso,
   versionTime,
-  len: (x) => x?.length || 0,
-  get: (x, k) => x?.[k] || false,
-  firstName: (s) => (s || "").split(" ")[0],
-  lower: (s) => (s || "").toLowerCase(),
+  len: (x: { length?: number } | null | undefined) => x?.length || 0,
+  get: (
+    x: Record<string, unknown> | null | undefined,
+    k: string | number,
+  ) => x?.[k] || false,
+  firstName: (s: string) => (s || "").split(" ")[0],
+  lower: (s: string) => (s || "").toLowerCase(),
   stylesheets: () => safe(generated("stylesheets.html")),
   importmap: () => safe(generated("importmap.html")),
-  printf: (fmt, ...args) => fmt.replace(/%[sd]/g, () => args.shift()),
-  allEmoji: (s) => !!s && !/[\p{L}\p{N}]/u.test(s),
-  qrpath: (s) => "/qr_code/" + Buffer.from(s).toString("base64url"),
-  humanInvolvement: (s) =>
+  // nunjucks templates pass printf arguments as arbitrary values
+  printf: (fmt: string, ...args: any[]) =>
+    fmt.replace(/%[sd]/g, () => args.shift()),
+  allEmoji: (s: string) => !!s && !/[\p{L}\p{N}]/u.test(s),
+  qrpath: (s: string) => "/qr_code/" + Buffer.from(s).toString("base64url"),
+  humanInvolvement: (s: string) =>
     ({
       everything: "Notifying about all messages",
       mentions: "Notifying about @ mentions",
       nothing: "Notifications are off",
       invisible: "Notifications are off and room invisible in sidebar",
-    })[s] || "",
-  nextInvolvement: (kind, v) => {
+    } as Record<string, string>)[s] || "",
+  nextInvolvement: (kind: string, v: string) => {
     const choices =
       kind === "Rooms::Direct"
         ? ["everything", "nothing"]
@@ -198,11 +206,12 @@ for (const [name, fn] of Object.entries({
   },
   reactions: () =>
     reactions.map(([Character, Title]) => ({ Character, Title })),
-  agent: (s) => ({ Name: s, Platform: "", Browser: s }),
-  helpMailto: (u) => safe(`href="mailto:${escape(u.Email)}"`),
-  botCommand: (origin, room, key) =>
+  agent: (s: string) => ({ Name: s, Platform: "", Browser: s }),
+  helpMailto: (u: { Email: string }) =>
+    safe(`href="mailto:${escape(u.Email)}"`),
+  botCommand: (origin: string, room: string | number, key: string) =>
     `curl -d 'Hello!' ${origin}/rooms/${room}/${key}/messages`,
-  translate: (key) =>
+  translate: (key: string) =>
     safe(
       '<details class="position-relative" data-controller="popup"><summary class="btn"><img width="20" height="20" src="' +
         asset("globe.svg") +
@@ -217,15 +226,22 @@ for (const [name, fn] of Object.entries({
     ),
 }))
   env.addGlobal(name, fn);
-export function fragment(name, data = {}) {
+export function fragment(
+  name: string,
+  data: Record<string, unknown> = {},
+): string {
   return env.renderString(
     `{% import "pages.html" as p %}{{ p.${name.replaceAll("-", "_")}(dot) }}`,
     { dot: data },
   );
 }
-export function render(req, screen, extra = {}) {
+export function render(
+  req: CompatReq,
+  screen: string,
+  extra: Record<string, unknown> = {},
+) {
   const account = get("SELECT * FROM accounts LIMIT 1");
-  let settings = {};
+  let settings: Record<string, unknown> = {};
   try {
     settings = JSON.parse(account?.settings || "{}");
   } catch {}

@@ -33,7 +33,7 @@ const colors = [
   "#3B3633",
   "#67695E",
 ];
-function crc32(value) {
+function crc32(value: string) {
   let c = -1;
   for (const byte of Buffer.from(value)) {
     c ^= byte;
@@ -41,15 +41,16 @@ function crc32(value) {
   }
   return (c ^ -1) >>> 0;
 }
-const escape = (value) =>
+const escape = (value: unknown) =>
   String(value).replace(
     /[&<>"']/g,
     (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        c
-      ],
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" } as Record<
+        string,
+        string
+      >)[c]!,
   );
-function attachment(type, id, name) {
+function attachment(type: string, id: number | string, name: string) {
   return get(
     "SELECT b.* FROM active_storage_attachments a JOIN active_storage_blobs b ON b.id=a.blob_id WHERE a.record_type=? AND a.record_id=? AND a.name=?",
     type,
@@ -57,7 +58,7 @@ function attachment(type, id, name) {
     name,
   );
 }
-function cache(req, res, etag) {
+function cache(req: CompatReq, res: CompatRes, etag: string) {
   res.set({
     ETag: etag,
     "Cache-Control": "public, max-age=1800, stale-while-revalidate=604800",
@@ -105,7 +106,9 @@ export function registerPublic(
               "reference/app/assets/images/default-bot-avatar.svg",
             ),
           );
-      const initials = Array.from(user.name.matchAll(/(?:^|\s)(\S)/gu))
+      const initials = Array.from(
+        user.name.matchAll(/(?:^|\s)(\S)/gu) as Iterable<RegExpMatchArray>,
+      )
         .map((m) => m[1])
         .join("");
       let svg = fs.readFileSync(
@@ -115,7 +118,7 @@ export function registerPublic(
       svg = svg
         .replace(
           "<%= avatar_background_color(@user) %>",
-          colors[crc32(String(user.id)) % colors.length],
+          colors[crc32(String(user.id)) % colors.length]!,
         )
         .replace("<%= @user.initials %>", escape(initials))
         .replace(

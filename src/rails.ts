@@ -6,35 +6,46 @@ import {
   createCipheriv,
   createDecipheriv,
 } from "node:crypto";
+import type { Row } from "./db.ts";
 
 // Rails wire contracts are checked against independently generated golden vectors.
-const keys = new Map();
+const keys = new Map<string, Buffer>();
 let clock = () => new Date();
-export function setClock(fn) {
+export function setClock(fn?: () => Date) {
   clock = fn || (() => new Date());
 }
-export const parseJSON = (text) =>
-  JSON.parse(text, (k, v, context) =>
-    typeof v === "number" &&
-    Number.isInteger(v) &&
-    !Number.isSafeInteger(v) &&
-    /^-?\d+$/.test(context.source || "")
-      ? BigInt(context.source)
-      : v,
+export const parseJSON = (text: string) =>
+  JSON.parse(
+    text,
+    // Bun passes the reviver a third context argument (with
+    // the raw source text) that the standard lib types omit.
+    (
+      (k: string, v: any, context: { source?: string }) =>
+        typeof v === "number" &&
+        Number.isInteger(v) &&
+        !Number.isSafeInteger(v) &&
+        /^-?\d+$/.test(context.source || "")
+          ? BigInt(context.source!)
+          : v
+    ) as (key: string, value: any) => any,
   );
 export const stringify = (value: unknown): string =>
   JSON.stringify(value, (k, v) =>
     typeof v === "bigint" ? (JSON as unknown as { rawJSON(s: string): unknown }).rawJSON(v.toString()) : v,
   );
-export const encode = (value) =>
+export const encode = (value: unknown) =>
   Buffer.from(
     stringify(value).replace(
       /[<>&]/g,
-      (c) => ({ "<": "\\u003c", ">": "\\u003e", "&": "\\u0026" })[c],
+      (c) =>
+        ({ "<": "\\u003c", ">": "\\u003e", "&": "\\u0026" } as Record<
+          string,
+          string
+        >)[c]!,
     ),
   );
-export const b64 = (value) => Buffer.from(value).toString("base64");
-export function decode64(value) {
+export const b64 = (value: Buffer | string) => Buffer.from(value).toString("base64");
+export function decode64(value: unknown): Buffer {
   if (
     typeof value !== "string" ||
     !/^[A-Za-z0-9+/_-]*={0,2}$/.test(value) ||
@@ -43,7 +54,7 @@ export function decode64(value) {
     throw new Error("invalid base64");
   return Buffer.from(value, "base64");
 }
-export function key(salt, length = 64) {
+export function key(salt: string, length = 64): Buffer {
   const secret = process.env.SECRET_KEY_BASE;
   if (!secret) throw new Error("SECRET_KEY_BASE is required");
   const id = JSON.stringify([secret, salt, length]);
@@ -51,24 +62,28 @@ export function key(salt, length = 64) {
     if (keys.size >= 64) keys.clear();
     keys.set(id, pbkdf2Sync(secret, salt, 1000, length, "sha256"));
   }
-  return keys.get(id);
+  return keys.get(id)!;
 }
-const mac = (data, salt, algorithm = "sha1") =>
+const mac = (data: string, salt: string, algorithm = "sha1") =>
   createHmac(algorithm, key(salt)).update(data).digest("hex");
-export function equal(a, b) {
+export function equal(
+  a: string | Uint8Array | number[],
+  b: string | Uint8Array | number[],
+): boolean {
   const x = Buffer.from(a),
     y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
 }
 // Read only Marshal data primitives; never instantiate Ruby classes or execute code.
-function marshal(raw) {
+// Marshal payloads decode to arbitrary application data.
+function marshal(raw: Buffer): any {
   let offset = 2,
     nodes = 0;
-  const symbols = [],
-    objects = [];
+  const symbols: string[] = [],
+    objects: any[] = [];
   const byte = () => {
     if (offset >= raw.length) throw new Error("truncated Marshal");
-    return raw[offset++];
+    return raw[offset++]!;
   };
   function integer() {
     let n = byte();
@@ -92,7 +107,7 @@ function marshal(raw) {
     offset += length;
     return text;
   }
-  function read(depth = 0) {
+  function read(depth = 0): any {
     if (depth > 32 || ++nodes > 10000)
       throw new Error("Marshal limits exceeded");
     const type = byte();
@@ -136,7 +151,7 @@ function marshal(raw) {
     if (type === 91) {
       const count = integer();
       if (count < 0 || count > 10000) throw new Error("invalid Marshal array");
-      const value = [];
+      const value: unknown[] = [];
       objects.push(value);
       for (let i = 0; i < count; i++) value.push(read(depth + 1));
       return value;
@@ -168,13 +183,13 @@ function marshal(raw) {
   }
   return read();
 }
-function load(raw) {
+function load(raw: Buffer): any {
   return raw[0] === 4 && raw[1] === 8
     ? marshal(raw)
     : parseJSON(raw.toString("utf8"));
 }
 
-export function unpack(raw, purpose = null) {
+export function unpack(raw: Buffer, purpose: string | null = null): unknown {
   const v = load(raw);
   if (v && typeof v === "object" && !Array.isArray(v) && "_rails" in v) {
     const m = v._rails;
@@ -239,7 +254,7 @@ export function signCookie(name: string, value: unknown, expiry: Date | null = n
   const p = b64(cookieEnvelope(name, value, expiry));
   return p + "--" + mac(p, "signed cookie");
 }
-function cookieValue(raw, name) {
+function cookieValue(raw: Buffer, name: string): unknown {
   if (raw.toString().startsWith('{"_rails":{"message":"')) {
     const m = parseJSON(raw.toString())._rails;
     if (m.pur && m.pur !== "cookie." + name)
@@ -250,7 +265,7 @@ function cookieValue(raw, name) {
   }
   return parseJSON(raw.toString());
 }
-export function verifyCookie(name, raw) {
+export function verifyCookie(name: string, raw: string): unknown {
   raw = decodeURIComponent(raw);
   const i = raw.lastIndexOf("--");
   if (i < 0) throw new Error("invalid cookie");
@@ -289,7 +304,7 @@ export function decryptCookie(name: string, raw: string): unknown {
     name,
   );
 }
-function modelPurpose(model, purpose) {
+function modelPurpose(model: string, purpose: string): string {
   if (model.startsWith("Rooms::")) model = "Room";
   const underscored = model
     .replaceAll("::", "/")
@@ -329,16 +344,16 @@ export function verifyId(model: string, raw: unknown, purpose = ""): number | bi
     !/^[-+]?\d+$/.test(String(value))
   )
     throw new Error("invalid model id");
-  const id = BigInt(value);
+  const id = BigInt(value as string | number | bigint);
   return id > BigInt(Number.MAX_SAFE_INTEGER) ||
     id < BigInt(Number.MIN_SAFE_INTEGER)
     ? id
     : Number(id);
 }
-export const stream = (room) =>
+export const stream = (room: Row): string =>
   Buffer.from(`gid://campfire/${room.type}/${room.id}`).toString("base64url") +
   ":messages";
-export const signStream = (name) =>
+export const signStream = (name: string): string =>
   sign(
     name,
     "turbo/signed_stream_verifier_key",
@@ -355,7 +370,7 @@ export function verifyStream(raw: unknown): string | number {
     throw new Error("invalid stream");
   return v;
 }
-export const sgid = (model, id) =>
+export const sgid = (model: string, id: unknown): string =>
   sign(
     `gid://campfire/${model}/${id}?expires_in`,
     "signed_global_ids",
@@ -364,24 +379,34 @@ export const sgid = (model, id) =>
     "sha1",
     true,
   );
-export function verifySgid(raw, purpose = "attachable") {
-  let v;
+export function verifySgid(raw: unknown, purpose = "attachable"): string {
+  let v: unknown;
   try {
     v = verify(raw, "signed_global_ids", purpose);
   } catch {
     v = verify(raw, "signed_global_ids");
-    if (!v || typeof v !== "object" || v.purpose !== purpose)
+    if (
+      !v ||
+      typeof v !== "object" ||
+      (v as Record<string, unknown>).purpose !== purpose
+    )
       throw new Error("invalid GlobalID purpose");
-    if (v.expires_at && !(new Date(v.expires_at) >= clock()))
+    const envelope = v as { expires_at?: unknown; gid?: unknown };
+    if (
+      envelope.expires_at &&
+      !(new Date(envelope.expires_at as string | number | Date) >= clock())
+    )
       throw new Error("expired GlobalID");
-    v = v.gid;
+    v = envelope.gid;
   }
   if (typeof v !== "string") throw new Error("invalid GlobalID");
   return v;
 }
-export function unverifiedUserGid(raw) {
+export function unverifiedUserGid(raw: string): number | null {
   try {
-    const envelope = JSON.parse(decode64(raw.slice(0, raw.lastIndexOf("--"))));
+    const envelope = JSON.parse(
+      decode64(raw.slice(0, raw.lastIndexOf("--"))).toString(),
+    );
     const m = envelope._rails;
     if (!m || typeof m !== "object") return null;
     let v = m.data;
@@ -415,15 +440,15 @@ export function validCsrf(raw: Uint8Array | number[], token: string, path: strin
     let v = decode64(token);
     if (v.length === 32) return equal(v, raw);
     if (v.length === 64)
-      v = Buffer.from(v.subarray(0, 32).map((x, i) => x ^ v[i + 32]));
+      v = Buffer.from(v.subarray(0, 32).map((x, i) => x ^ v[i + 32]!));
     if (v.length !== 32) return false;
     const candidates = [
       raw,
-      createHmac("sha256", raw).update("!real_csrf_token").digest(),
+      createHmac("sha256", raw as Buffer).update("!real_csrf_token").digest(),
     ];
     if (path != null && method != null)
       candidates.push(
-        createHmac("sha256", raw)
+        createHmac("sha256", raw as Buffer)
           .update(path.replace(/\/$/, "") + "#" + method.toLowerCase())
           .digest(),
       );

@@ -536,8 +536,8 @@ export function registerRoutes(app: RouteCollector) {
           cleanupPrepared(blob);
           throw error;
         }
-        publishMessage(message);
-        notifyMessage(message);
+        publishMessage(message!);
+        notifyMessage(message!);
         if (isBot)
           return res
             .status(201)
@@ -572,7 +572,7 @@ export function registerRoutes(app: RouteCollector) {
           throw error;
         }
         for (const id of obsolete || []) enqueue("purge", { blob_id: id });
-        publishMessage(message, "replace");
+        publishMessage(message!, "replace");
         return json
           ? res.json(serializeMessage(message!, req))
           : res.redirect(`/rooms/${room.id}/messages/${message!.id}`);

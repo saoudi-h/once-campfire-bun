@@ -42,7 +42,7 @@ before(async () => {
   );
   const { Elysia } = await import("elysia");
   const { websocket } = await import("elysia/websocket");
-  app = new Elysia({ aot: false })
+  app = new Elysia()
     .use(websocket())
     .ws("/cable", cableWs)
     .listen({ port: 0, hostname: "127.0.0.1" });
@@ -136,7 +136,7 @@ test("Presence refresh supports simultaneous tabs and uses room_id reads", async
     c.ws.send(JSON.stringify({ command: "subscribe", identifier }));
   await wait(
     () =>
-      get("SELECT connections FROM memberships WHERE room_id=1 AND user_id=1")
+      get("SELECT connections FROM memberships WHERE room_id=1 AND user_id=1")!
         .connections === 2,
   );
   a.ws.send(
@@ -148,7 +148,7 @@ test("Presence refresh supports simultaneous tabs and uses room_id reads", async
   );
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(
-    get("SELECT connections FROM memberships WHERE room_id=1 AND user_id=1")
+    get("SELECT connections FROM memberships WHERE room_id=1 AND user_id=1")!
       .connections,
     2,
   );
@@ -157,7 +157,7 @@ test("Presence refresh supports simultaneous tabs and uses room_id reads", async
   await closedA;
   await wait(
     () =>
-      get("SELECT connections FROM memberships WHERE room_id=1 AND user_id=1")
+      get("SELECT connections FROM memberships WHERE room_id=1 AND user_id=1")!
         .connections === 1,
   );
   const closedB = closePromise(b.ws);
@@ -165,7 +165,7 @@ test("Presence refresh supports simultaneous tabs and uses room_id reads", async
   await closedB;
   await wait(
     () =>
-      get("SELECT connections FROM memberships WHERE room_id=1 AND user_id=1")
+      get("SELECT connections FROM memberships WHERE room_id=1 AND user_id=1")!
         .connections === 0,
   );
 });

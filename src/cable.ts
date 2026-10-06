@@ -1,6 +1,26 @@
 import { get, run, now, transaction } from "./db.ts";
 import * as rails from "./rails.ts";
 // Keep the socket module independent from the HTTP router to avoid import cycles.
+
+// Per-socket Action Cable client state. The identity fields
+// (session_id/user_id/name) come from the verified session cookie.
+interface CableClient {
+  session_id: number;
+  user_id: number;
+  name: string;
+  // Bun/Elysia WebSocket; only close/send/readyState/
+  // getBufferedAmount are exercised here.
+  ws: any;
+  subscriptions: Map<string, CableSubscription>;
+}
+
+interface CableSubscription {
+  channel: string;
+  room: number;
+  stream: string;
+  present?: boolean;
+}
+
 function identity(header = "") {
   try {
     const part = header
@@ -8,7 +28,7 @@ function identity(header = "") {
       .find((p) => p.trim().startsWith("session_token="));
     if (!part) return null;
     const raw = part.trim().slice("session_token=".length),
-      token = rails.verifyCookie("session_token", raw);
+      token = rails.verifyCookie("session_token", raw) as string;
     return get(
       "SELECT s.id AS session_id,u.id AS user_id,u.name FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND u.status=0 AND u.role<>2",
       token,
@@ -17,9 +37,9 @@ function identity(header = "") {
     return null;
   }
 }
-const clients = new Set<any>();
-const wsClients = new WeakMap<object, any>();
-function alive(client) {
+const clients = new Set<CableClient>();
+const wsClients = new WeakMap<object, CableClient>();
+function alive(client: CableClient) {
   return Boolean(
     get(
       "SELECT s.id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.user_id=? AND u.status=0 AND u.role<>2",
@@ -28,7 +48,7 @@ function alive(client) {
     ),
   );
 }
-function authorize(client, identifier) {
+function authorize(client: CableClient, identifier: string): CableSubscription | null {
   try {
     if (!alive(client)) return null;
     const p = JSON.parse(identifier);
@@ -40,7 +60,7 @@ function authorize(client, identifier) {
     } else if (["ReadRoomsChannel", "UnreadRoomsChannel"].includes(channel))
       stream = `user_${client.user_id}_${channel === "ReadRoomsChannel" ? "reads" : "unreads"}`;
     else if (channel === "RoomMessagesChannel") {
-      stream = rails.verifyStream(p.signed_stream_name);
+      stream = rails.verifyStream(p.signed_stream_name) as string;
       if (typeof stream !== "string") return null;
       const [encoded, suffix, ...rest] = stream.split(":");
       if (suffix !== "messages" || rest.length) return null;
@@ -75,7 +95,7 @@ function authorize(client, identifier) {
         return null;
       stream = channel + ":" + room;
     } else if (channel === "Turbo::StreamsChannel") {
-      stream = rails.verifyStream(p.signed_stream_name);
+      stream = rails.verifyStream(p.signed_stream_name) as string;
       const own =
         Buffer.from(`gid://campfire/User/${client.user_id}`)
           .toString("base64")
@@ -105,7 +125,7 @@ function isOpen(ws: any): boolean {
     return true;
   } catch { return false; }
 }
-function frame(client: any, value: any) {
+function frame(client: CableClient, value: unknown) {
   if (!isOpen(client.ws)) return;
   if (bufferedAmount(client.ws) > 1024 * 1024) {
     try { client.ws.close(1013, "slow consumer"); } catch {}
@@ -113,7 +133,7 @@ function frame(client: any, value: any) {
   }
   try { client.ws.send(JSON.stringify(value)); } catch {}
 }
-export function deliver(stream, message) {
+export function deliver(stream: string, message: unknown) {
   for (const client of clients) {
     if (!alive(client)) {
       frame(client, {
@@ -137,15 +157,15 @@ export function deliver(stream, message) {
 }
 // Fanout hook: single-process Bun delivers directly. Multi-worker fanout
 // is wired in server.ts via a shared BroadcastChannel/redis if enabled.
-export let fanout: ((stream: string, message: any) => void) | null = null;
-export function setFanout(fn: ((stream: string, message: any) => void) | null) {
+export let fanout: ((stream: string, message: unknown) => void) | null = null;
+export function setFanout(fn: ((stream: string, message: unknown) => void) | null) {
   fanout = fn;
 }
-export function publish(stream: string, message: any) {
+export function publish(stream: string, message: unknown) {
   deliver(stream, message);
   try { fanout?.(stream, message); } catch {}
 }
-function presence(user, room, action) {
+function presence(user: number, room: number, action: string) {
   transaction(() => {
     const m = get(
       "SELECT * FROM memberships WHERE user_id=? AND room_id=?",
@@ -184,7 +204,7 @@ function presence(user, room, action) {
   if (action === "present") publish(`user_${user}_reads`, { room_id: room });
 }
 
-function dropClient(client: any) {
+function dropClient(client: CableClient) {
   clients.delete(client);
   try {
     for (const sub of client.subscriptions.values())
@@ -193,7 +213,9 @@ function dropClient(client: any) {
   } catch {}
 }
 
-function handleSocketMessage(client: any, raw: any, isBinary: boolean) {
+// raw is a WebSocket text frame (or an Elysia pre-parsed
+// JSON object re-stringified by the caller): genuinely dynamic.
+function handleSocketMessage(client: CableClient, raw: any, isBinary: boolean) {
   const ws = client.ws;
   if (isBinary) {
     closeSocket(ws, 1003);
@@ -214,8 +236,8 @@ function handleSocketMessage(client: any, raw: any, isBinary: boolean) {
       }
       if (sub.channel === "PresenceChannel") {
         const existing = client.subscriptions.get(identifier);
-        (sub as any).present = existing ? existing.present : true;
-        if (!existing) presence(client.user_id, (sub as any).room, "present");
+        sub.present = existing ? existing.present : true;
+        if (!existing) presence(client.user_id, sub.room, "present");
       }
       client.subscriptions.set(identifier, sub);
       frame(client, { type: "confirm_subscription", identifier });
@@ -229,7 +251,8 @@ function handleSocketMessage(client: any, raw: any, isBinary: boolean) {
       if (!sub) return;
       const body = JSON.parse(msg.data);
       if (sub.channel === "PresenceChannel") {
-        const stored = client.subscriptions.get(identifier);
+        // The enclosing branch already checked has(identifier).
+        const stored = client.subscriptions.get(identifier)!;
         if (body.action === "refresh" && stored.present)
           presence(client.user_id, sub.room, "refresh");
         else if (body.action === "absent" && stored.present) {

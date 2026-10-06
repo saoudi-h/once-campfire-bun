@@ -20,11 +20,12 @@ test("HTTP middleware preserves a large integer in a real encrypted Rails sessio
     assert.equal(response.status, 200);
     const raw = response.headers
       .getSetCookie()
-      .find((c) => c.startsWith("_campfire_session="))
-      .split(";")[0]
+      .find((c) => c.startsWith("_campfire_session="))!
+      .split(";")[0]!
       .slice("_campfire_session=".length);
     assert.equal(
-      rails.decryptCookie("_campfire_session", raw).custom_id,
+      (rails.decryptCookie("_campfire_session", raw) as { custom_id: bigint })
+        .custom_id,
       9007199254740993n,
     );
   } finally {

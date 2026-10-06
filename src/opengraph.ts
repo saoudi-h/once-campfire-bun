@@ -6,9 +6,18 @@ import { parse } from "parse5";
 import sanitizeHtml from "sanitize-html";
 import type { CompatReq, CompatRes } from "./compat.ts";
 
-export function publicAddress(address) {
+/** Structural subset of parse5's tree nodes used by fetchMetadata. */
+type WalkNode = {
+  nodeName?: string;
+  tagName?: string;
+  attrs?: { name: string; value: string }[];
+  childNodes?: WalkNode[];
+  value?: string;
+};
+
+export function publicAddress(address: string) {
   if (net.isIPv4(address)) {
-    const [a, b] = address.split(".").map(Number);
+    const [a, b] = address.split(".").map(Number) as [number, number];
     return !(
       a === 0 ||
       a === 10 ||
@@ -34,7 +43,7 @@ export function publicAddress(address) {
     !ip.startsWith("2002:")
   );
 }
-export async function resolvePublic(url) {
+export async function resolvePublic(url: string) {
   const parsed = new URL(url);
   if (
     !["http:", "https:"].includes(parsed.protocol) ||
@@ -48,20 +57,31 @@ export async function resolvePublic(url) {
     : await dns.lookup(hostname, { all: true });
   if (!addresses.length || addresses.some((a) => !publicAddress(a.address)))
     throw new Error("private address");
-  return { url: parsed, address: addresses[0] };
+  return { url: parsed, address: addresses[0]! };
 }
+type PinnedResponse = {
+  status: number;
+  headers: http.IncomingHttpHeaders;
+  body: Buffer;
+};
 export function requestPinned(
-  url,
-  address,
+  url: URL,
+  address: { address: string; family: number },
   {
     method = "GET",
     headers = {},
     body = null,
     maxBytes = 1024 * 1024,
     timeout = 7000,
+  }: {
+    method?: string;
+    headers?: http.OutgoingHttpHeaders;
+    body?: string | Buffer | null;
+    maxBytes?: number;
+    timeout?: number;
   } = {},
-) {
-  return new Promise((resolve, reject) => {
+): Promise<PinnedResponse> {
+  return new Promise<PinnedResponse>((resolve, reject) => {
     const request = (url.protocol === "https:" ? https : http).request(
       url,
       {
@@ -75,7 +95,7 @@ export function requestPinned(
       },
       (response) => {
         let size = 0;
-        const chunks = [];
+        const chunks: Buffer[] = [];
         response.on("data", (chunk) => {
           size += chunk.length;
           if (size > maxBytes) {
@@ -86,7 +106,7 @@ export function requestPinned(
         });
         response.on("end", () =>
           resolve({
-            status: response.statusCode,
+            status: response.statusCode!,
             headers: response.headers,
             body: Buffer.concat(chunks),
           }),
@@ -105,7 +125,7 @@ export function requestPinned(
     request.end();
   });
 }
-export async function fetchMetadata(value) {
+export async function fetchMetadata(value: string) {
   let url = value;
   for (let redirects = 0; redirects < 4; redirects++) {
     const resolved = await resolvePublic(url);
@@ -114,7 +134,7 @@ export async function fetchMetadata(value) {
       timeout: 5000,
     });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
-      url = new URL(response.headers.location, resolved.url).href;
+      url = new URL(response.headers.location!, resolved.url).href;
       continue;
     }
     if (
@@ -123,22 +143,22 @@ export async function fetchMetadata(value) {
     )
       throw new Error("no metadata");
     const doc = parse(response.body.toString("utf8"));
-    const metadata = {};
+    const metadata: Record<string, string> = {};
     let title = "";
-    function walk(node) {
+    function walk(node: WalkNode) {
       if (node.tagName === "meta") {
         const attrs = Object.fromEntries(
-          node.attrs.map((a) => [a.name, a.value]),
+          node.attrs!.map((a) => [a.name, a.value]),
         );
         if (attrs.property || attrs.name)
-          metadata[attrs.property || attrs.name] = attrs.content || "";
+          metadata[(attrs.property || attrs.name) as string] = attrs.content || "";
       }
       if (node.tagName === "title")
         title = (node.childNodes || []).map((n) => n.value || "").join("");
       for (const child of node.childNodes || []) walk(child);
     }
     walk(doc);
-    const plain = (s) =>
+    const plain = (s?: string): string =>
       sanitizeHtml(s || "", { allowedTags: [], allowedAttributes: {} });
     const result = {
       url: resolved.url.href,

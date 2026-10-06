@@ -15,7 +15,7 @@ import {
 } from "./storage.ts";
 
 let connection: Database | undefined,
-  timer: ReturnType<typeof setInterval> | undefined,
+  timer: ReturnType<typeof setInterval> | null | undefined,
   working = false,
   stopping = false;
 export function jobsDb(): Database {
@@ -91,7 +91,8 @@ export function finish(job: { id: number; lease_token: string; attempts: number 
       job.lease_token,
     ).changes;
 }
-export async function perform(kind, data) {
+// Job payloads are JSON.parse'd at dispatch; their shape varies by kind.
+export async function perform(kind: string, data: Record<string, any>) {
   if (kind === "purge") {
     purgeBlob(data.blob_id);
     return;
@@ -124,12 +125,19 @@ export async function perform(kind, data) {
       message.id,
     )?.body || "";
   const { messagePlainText } = await import("./richtext.js");
-  async function reply(text, attachment = null) {
+  async function reply(
+    text: string,
+    attachment: {
+      buffer: Buffer;
+      originalname: string;
+      mimetype: string;
+    } | null = null,
+  ) {
     let result;
     try {
       result = stagedFiles(() =>
         domain.createMessage(
-          message.room_id,
+          message!.room_id,
           hookUserId,
           text,
           crypto.randomUUID(),
@@ -139,21 +147,21 @@ export async function perform(kind, data) {
         const blob = storeUpload(
           attachment,
           "Message",
-          result.id,
+          result!.id,
           "attachment",
         );
         await processAttachment(blob);
-        domain.indexMessage(result.id, text, blob.filename);
+        domain.indexMessage(result!.id, text, blob.filename);
       }
     } catch (error) {
       if (result) domain.deleteMessage(result, { broadcast: false });
       throw error;
     }
-    domain.publishMessage(result);
-    domain.notifyMessage(result, { webhooks: false });
+    domain.publishMessage(result!);
+    domain.notifyMessage(result!, { webhooks: false });
     return result;
   }
-  let hookUserId;
+  let hookUserId: number;
   if (kind === "webhook") {
     const hook = get(
       "SELECT w.*,u.name,u.bot_token,u.status FROM webhooks w JOIN users u ON u.id=w.user_id WHERE w.id=?",
@@ -216,10 +224,10 @@ export async function perform(kind, data) {
       throw error;
     }
     const type = response.headers["content-type"]?.split(";")[0];
-    if (response.status === 200 && ["text/plain", "text/html"].includes(type))
+    if (response.status === 200 && ["text/plain", "text/html"].includes(type!))
       await reply(response.body.toString("utf8"));
     else if (type && response.body.length) {
-      const extensions = {
+      const extensions: Record<string, string> = {
         "image/png": "png",
         "image/jpeg": "jpg",
         "image/webp": "webp",
@@ -250,7 +258,7 @@ export async function perform(kind, data) {
           badge: get(
             "SELECT count(*) AS n FROM memberships WHERE user_id=? AND unread_at IS NOT NULL",
             data.user_id,
-          ).n,
+          )!.n,
         },
       },
     };
@@ -314,7 +322,7 @@ export async function workOnce() {
     finish(job);
   } catch (error) {
     finish(job, error);
-    console.error("Campfire job failed:", error.message);
+    console.error("Campfire job failed:", (error as Error).message);
   } finally {
     clearInterval(heartbeat);
   }
@@ -329,7 +337,7 @@ export function startWorker() {
     try {
       await workOnce();
     } catch (error) {
-      console.error("Campfire queue failed:", error.message);
+      console.error("Campfire queue failed:", (error as Error).message);
     } finally {
       working = false;
     }
@@ -338,7 +346,7 @@ export function startWorker() {
 }
 export async function stopWorker() {
   stopping = true;
-  clearInterval(timer);
+  clearInterval(timer!);
   timer = null;
   while (working) await new Promise((resolve) => setTimeout(resolve, 25));
 }

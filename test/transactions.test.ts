@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { initialize, transaction, onCommit, get, run } from "../src/db.ts";
 initialize(":memory:");
 test("Nested post-commit work runs only after durable outer commit and disappears on rollback", () => {
-  const observed = [];
+  const observed: string[] = [];
   assert.throws(() =>
     transaction(() => {
       run(
@@ -17,7 +17,7 @@ test("Nested post-commit work runs only after durable outer commit and disappear
       throw new Error("rollback");
     }),
   );
-  assert.deepEqual(observed, []);
+  assert.deepEqual(observed, [] as string[]);
   assert.equal(get("SELECT id FROM accounts"), undefined);
   transaction(() => {
     run(
@@ -28,9 +28,9 @@ test("Nested post-commit work runs only after durable outer commit and disappear
       "2026-01-01",
     );
     transaction(() =>
-      onCommit(() => observed.push(get("SELECT name FROM accounts").name)),
+      onCommit(() => observed.push(get("SELECT name FROM accounts")!.name)),
     );
-    assert.deepEqual(observed, []);
+    assert.deepEqual(observed, [] as string[]);
   });
   assert.deepEqual(observed, ["Committed"]);
 });

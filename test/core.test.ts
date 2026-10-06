@@ -167,7 +167,7 @@ test("retained frontend compiles room/login/sidebar/profile/admin screens", () =
     csrfToken: "test-csrf",
     get: (name: string) => (name === "host" ? "example.test" : null),
     protocol: "http",
-  };
+  } as CompatReq;
   for (const screen of [
     "login",
     "welcome",
@@ -322,7 +322,7 @@ test("inline native attachments preserve rich text ownership, private authorizat
     blob.id,
   );
   assert.equal(plainText(html), "Attachment [private.txt]");
-  assert.ok(String(messageData([message])[0].HTML).includes(blobUrl(blob)));
+  assert.ok(String(messageData([message])[0]!.HTML).includes(blobUrl(blob)));
   domain.deleteMessage(message, { broadcast: false });
   assert.equal(
     get(

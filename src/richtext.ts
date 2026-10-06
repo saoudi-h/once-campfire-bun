@@ -1,17 +1,22 @@
 import sanitizeHtml from "sanitize-html";
 import { parseFragment } from "parse5";
-import { get, all, run, now } from "./db.ts";
+import type { DefaultTreeAdapterTypes } from "parse5";
+import { get, all, run, now, type Row } from "./db.ts";
 import { blobUrl, representationUrl, authorizedBlob } from "./storage.ts";
 import { verifySgid, unverifiedUserGid } from "./rails.ts";
-export const escape = (value) =>
+export const escape = (value: unknown) =>
   String(value ?? "").replace(
     /[&<>"']/g,
-    (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        c
-      ],
+    (c: string) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      } as Record<string, string>)[c]!,
   );
-export function sanitize(body = "") {
+export function sanitize(body = ""): string {
   return sanitizeHtml(canonicalize(String(body)), {
     allowedTags: [
       "a",
@@ -86,12 +91,14 @@ export function sanitize(body = "") {
 }
 export function canonicalize(body = "") {
   return String(body).replace(/<figure\b[^>]*>[\s\S]*?<\/figure>/gi, (html) => {
-    const node = parseFragment(html).childNodes[0];
+    const node = parseFragment(html).childNodes[0] as
+      | DefaultTreeAdapterTypes.Element
+      | undefined;
     const attrs = Object.fromEntries(
       (node?.attrs || []).map((a) => [a.name, a.value]),
     );
     if (!attrs["data-trix-attachment"]) return html;
-    let values = {};
+    let values: Record<string, unknown> = {};
     for (const name of ["data-trix-attachment", "data-trix-attributes"])
       try {
         values = { ...values, ...JSON.parse(attrs[name] || "{}") };
@@ -108,7 +115,7 @@ export function canonicalize(body = "") {
     );
   });
 }
-export function attachedBlob(attrs) {
+export function attachedBlob(attrs: Record<string, string>) {
   try {
     const gid = verifySgid(attrs.sgid || "");
     const match = gid.match(
@@ -122,28 +129,39 @@ export function attachedBlob(attrs) {
   }
 }
 export function plainText(body = "") {
-  function visit(node) {
-    if (node.nodeName === "#text") return node.value.replace(/[\r\n]+$/, "");
-    const tag = node.tagName,
+  function visit(node: DefaultTreeAdapterTypes.Node): string {
+    if (node.nodeName === "#text")
+      return (node as DefaultTreeAdapterTypes.TextNode).value.replace(
+        /[\r\n]+$/,
+        "",
+      );
+    const el = node as DefaultTreeAdapterTypes.Element;
+    const tag = el.tagName,
       attrs = Object.fromEntries(
-        (node.attrs || []).map((a) => [a.name, a.value]),
+        (el.attrs || []).map((a) => [a.name, a.value]),
       );
     if (["script", "style", "unsupported"].includes(tag)) return "";
     if (tag === "action-text-attachment") {
       const id = unverifiedUserGid(attrs.sgid || ""),
-        user = id && get("SELECT name FROM users WHERE id=?", Number(id));
+        user = (id && get("SELECT name FROM users WHERE id=?", Number(id))) as
+          | Row
+          | undefined;
       if (user) return "@" + user.name;
       const blob = attachedBlob(attrs);
       if (blob) return attrs.caption || "[" + blob.filename + "]";
-      const kind = (attrs["content-type"] || "").split("/")[0];
+      const kind = (attrs["content-type"] || "").split("/")[0]!;
       return ["image", "video", "audio"].includes(kind)
-        ? "[" + kind[0].toUpperCase() + kind.slice(1) + "]"
+        ? "[" + kind[0]!.toUpperCase() + kind.slice(1) + "]"
         : "";
     }
-    const text = (node.childNodes || []).map(visit).join(""),
+    const text = (el.childNodes || []).map(visit).join(""),
       trimmed = text.replace(/[\r\n]+$/, "");
-    const ancestors = [];
-    for (let p = node.parentNode; p; p = p.parentNode)
+    const ancestors: string[] = [];
+    for (
+      let p = el.parentNode as DefaultTreeAdapterTypes.Element | null;
+      p;
+      p = p.parentNode as DefaultTreeAdapterTypes.Element | null
+    )
       if (["ul", "ol"].includes(p.tagName)) ancestors.push(p.tagName);
     if (["p", "h1"].includes(tag)) return trimmed + "\n\n";
     if (["ul", "ol"].includes(tag))
@@ -157,11 +175,11 @@ export function plainText(body = "") {
       return content ? text.replace(content, "“" + content + "”") : "“”";
     }
     if (tag === "li") {
-      const siblings = (node.parentNode?.childNodes || []).filter(
+      const siblings = (el.parentNode?.childNodes || []).filter(
         (n) => n.nodeName !== "#text",
       );
       const bullet =
-        ancestors[0] === "ol" ? String(siblings.indexOf(node) + 1) + "." : "•";
+        ancestors[0] === "ol" ? String(siblings.indexOf(el) + 1) + "." : "•";
       return (
         "  ".repeat(Math.max(0, ancestors.length - 1)) +
         bullet +
@@ -181,25 +199,30 @@ export function plainText(body = "") {
     ),
   ).replace(/[\r\n]+$/, "");
 }
-export function mentionIds(body) {
+export function mentionIds(body: string) {
   // reference/lib/rails_ext/action_text_attachables.rb retains User mentions across key rotation.
-  const ids = new Set();
+  const ids = new Set<number>();
   for (const match of String(body).matchAll(
     /<action-text-attachment\b[^>]*\bsgid=["']([^"']+)/g,
   )) {
-    const id = unverifiedUserGid(match[1]);
+    const id = unverifiedUserGid(match[1] || "");
     if (id && get("SELECT id FROM users WHERE id=?", Number(id)))
       ids.add(Number(id));
   }
   return ids;
 }
-export function reconcileEmbeds(richId, body, userId = null) {
-  const ids = new Set();
+export function reconcileEmbeds(
+  richId: string | number,
+  body: string,
+  userId: number | null = null,
+) {
+  const ids = new Set<number>();
   const tree = parseFragment(body);
-  function collect(node) {
-    if (node.tagName === "action-text-attachment") {
+  function collect(node: DefaultTreeAdapterTypes.Node) {
+    const el = node as DefaultTreeAdapterTypes.Element;
+    if (el.tagName === "action-text-attachment") {
       const blob = attachedBlob(
-        Object.fromEntries(node.attrs.map((a) => [a.name, a.value])),
+        Object.fromEntries(el.attrs.map((a) => [a.name, a.value])),
       );
       if (blob) {
         if (userId !== null && !authorizedBlob(blob, { id: userId }))
@@ -215,7 +238,7 @@ export function reconcileEmbeds(richId, body, userId = null) {
         ids.add(blob.id);
       }
     }
-    for (const child of node.childNodes || []) collect(child);
+    for (const child of el.childNodes || []) collect(child);
   }
   collect(tree);
   const obsolete = all(
@@ -237,29 +260,30 @@ export function reconcileEmbeds(richId, body, userId = null) {
     );
   return obsolete.map((a) => a.blob_id);
 }
-export function renderBody(body) {
+export function renderBody(body: string) {
   return sanitize(body).replace(
     /<action-text-attachment\b([^>]*)>(?:[\s\S]*?<\/action-text-attachment>)?/g,
-    (full, attrs) => {
+    (full: string, attrs: string) => {
       const token = attrs.match(/\bsgid=["']([^"']+)/)?.[1];
       try {
-        const id = unverifiedUserGid(token);
-        const user = id && get("SELECT * FROM users WHERE id=?", Number(id));
+        const id = unverifiedUserGid(token || "");
+        const user = (id && get("SELECT * FROM users WHERE id=?", Number(id))) as
+          | Row
+          | undefined;
         if (user)
           return `<span class="mention" data-user-id="${user.id}"><a href="/users/${user.id}">${escape(user.name)}</a></span>`;
       } catch {}
       const attributes = Object.fromEntries(
-          parseFragment(full).childNodes[0]?.attrs?.map((a) => [
-            a.name,
-            a.value,
-          ]) || [],
-        ),
+        (parseFragment(full).childNodes[0] as
+          | DefaultTreeAdapterTypes.Element
+          | undefined)?.attrs?.map((a) => [a.name, a.value]) || [],
+      ),
         blob = attachedBlob(attributes);
       if (blob) {
         const url = blobUrl(blob),
           filename = escape(blob.filename);
         if ((blob.content_type || "").startsWith("image/"))
-          return `<figure class="attachment attachment--preview"><a href="${url}"><img src="${representationUrl(blob)}" alt="${filename}"></a>${attributes.caption ? "<figcaption>" + escape(attributes.caption) + "</figcaption>" : ""}</figure>`;
+          return `<figure class="attachment attachment--preview"><a href="${url}"><img src="${representationUrl(blob, [1200, 800], undefined!)}" alt="${filename}"></a>${attributes.caption ? "<figcaption>" + escape(attributes.caption) + "</figcaption>" : ""}</figure>`;
         return `<a href="${url}?disposition=attachment">${filename}</a>`;
       }
       return "";
@@ -267,7 +291,7 @@ export function renderBody(body) {
   );
 }
 
-export function messagePlainText(messageId, body = "") {
+export function messagePlainText(messageId: number, body = "") {
   return (
     plainText(body) ||
     get(

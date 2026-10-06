@@ -246,16 +246,16 @@ export function updateMessage(
   });
   return messageById(message.id);
 }
-export function deleteMessage(message, { broadcast = true } = {}) {
-  if (typeof message === "number") message = messageById(message);
-  if (!message) return;
+export function deleteMessage(message: Row | number, { broadcast = true }: { broadcast?: boolean } = {}) {
+  const row = typeof message === "number" ? messageById(message) : message;
+  if (!row) return;
   const richIds = all(
     "SELECT id FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
-    message.id,
+    row.id,
   ).map((r) => r.id);
   const blobIds = all(
     "SELECT blob_id FROM active_storage_attachments WHERE record_type='Message' AND record_id=?",
-    message.id,
+    row.id,
   ).map((a) => a.blob_id);
   for (const id of richIds)
     blobIds.push(
@@ -265,7 +265,7 @@ export function deleteMessage(message, { broadcast = true } = {}) {
       ).map((a) => a.blob_id),
     );
   transaction(() => {
-    run("DELETE FROM boosts WHERE message_id=?", message.id);
+    run("DELETE FROM boosts WHERE message_id=?", row.id);
     for (const id of richIds)
       run(
         "DELETE FROM active_storage_attachments WHERE record_type='ActionText::RichText' AND record_id=?",
@@ -273,22 +273,22 @@ export function deleteMessage(message, { broadcast = true } = {}) {
       );
     run(
       "DELETE FROM active_storage_attachments WHERE record_type='Message' AND record_id=?",
-      message.id,
+      row.id,
     );
     run(
       "DELETE FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
-      message.id,
+      row.id,
     );
-    run("DELETE FROM message_search_index WHERE rowid=?", message.id);
-    run("DELETE FROM messages WHERE id=?", message.id);
-    run("UPDATE rooms SET updated_at=? WHERE id=?", now(), message.room_id);
+    run("DELETE FROM message_search_index WHERE rowid=?", row.id);
+    run("DELETE FROM messages WHERE id=?", row.id);
+    run("UPDATE rooms SET updated_at=? WHERE id=?", now(), row.room_id);
   });
   onCommit(() => {
     for (const id of blobIds) enqueue("purge", { blob_id: id });
-    if (broadcast) publishMessage(message, "remove");
+    if (broadcast) publishMessage(row, "remove");
   });
 }
-export function publishMessage(message, action = "append") {
+export function publishMessage(message: Row, action = "append") {
   const room = get("SELECT * FROM rooms WHERE id=?", message.room_id);
   if (!room) return;
   const target =
@@ -298,7 +298,7 @@ export function publishMessage(message, action = "append") {
   const html =
     action === "remove"
       ? ""
-      : fragment("message", messageData([messageById(message.id)])[0]);
+      : fragment("message", messageData([messageById(message.id)!])[0]);
   publish(
     stream(room),
     `<turbo-stream action="${action}" target="${target}" maintain_scroll="true"><template>${html}</template></turbo-stream>`,
@@ -310,14 +310,14 @@ export function publishMessage(message, action = "append") {
     ))
       publish(`user_${m.user_id}_unreads`, { roomId: room.id });
 }
-export function notifyMessage(message, { webhooks = true } = {}) {
+export function notifyMessage(message: Row, { webhooks = true }: { webhooks?: boolean } = {}) {
   const body =
       get(
         "SELECT body FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
         message.id,
       )?.body || "",
     mentions = mentionIds(body),
-    room = get("SELECT * FROM rooms WHERE id=?", message.room_id);
+    room = get("SELECT * FROM rooms WHERE id=?", message.room_id)!;
   for (const m of all(
     "SELECT m.*,u.role,u.status FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.room_id=? AND m.user_id<>?",
     message.room_id,
@@ -340,7 +340,7 @@ export function notifyMessage(message, { webhooks = true } = {}) {
       enqueue("push", { user_id: m.user_id, message_id: message.id });
   }
 }
-export function deleteRoom(room) {
+export function deleteRoom(room: Row) {
   for (const message of all("SELECT * FROM messages WHERE room_id=?", room.id))
     deleteMessage(message);
   transaction(() => {

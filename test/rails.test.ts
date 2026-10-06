@@ -12,7 +12,11 @@ beforeEach(() => {
   r.setClock(() => new Date(v.now));
 });
 afterEach(() => r.setClock());
-const check = (examples, fn, field = "expected") => {
+const check = (
+  examples: Array<Record<string, any>>,
+  fn: (example: Record<string, any>) => unknown,
+  field = "expected",
+) => {
   for (const e of examples) {
     r.setClock(() => new Date(e.now || v.now));
     let actual = null;
@@ -52,7 +56,7 @@ test("Rails signed ID generation", () => {
 });
 test("Rails signed ID verification", () =>
   check(
-    v.signed_ids.verify.map((e) => ({
+    v.signed_ids.verify.map((e: Record<string, any>) => ({
       ...e,
       expected:
         e.expected === null
@@ -88,7 +92,7 @@ test("Rails app verifier generation", () => {
 });
 test("Rails app verifier verification", () =>
   check(
-    v.app_verifiers.verify.map((e) => ({
+    v.app_verifiers.verify.map((e: Record<string, any>) => ({
       ...e,
       expected: e.expected_json === null ? null : r.parseJSON(e.expected_json),
     })),
@@ -137,7 +141,7 @@ test("Signing key cache respects rotated installation secrets", () => {
 });
 test("Bounded data-only Marshal decoder reads independent Ruby storage transformations", () => {
   for (const e of JSON.parse(
-    readFileSync(new URL("../compat/marshal.json", import.meta.url)),
+    readFileSync(new URL("../compat/marshal.json", import.meta.url), "utf8"),
   ))
     assert.deepEqual(
       JSON.parse(JSON.stringify(r.unpack(r.decode64(e.marshal)))),

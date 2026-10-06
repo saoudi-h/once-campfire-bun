@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import type { AddressInfo } from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,7 +18,7 @@ const { createBackup } = await import("../bin/backup.js");
 const { restoreBackup } = await import("../bin/restore.js");
 const { publicAddress, resolvePublic } = await import("../src/opengraph.ts");
 function files() {
-  const walk = (d) =>
+  const walk = (d: string): string[] =>
     fs.existsSync(d)
       ? fs
           .readdirSync(d, { withFileTypes: true })
@@ -142,10 +143,10 @@ test("public fetch rejects loopback and mapped private addresses", async () => {
 test("durable jobs recover expired leases and fence obsolete acknowledgements", () => {
   jobs.jobsDb().exec("DELETE FROM jobs");
   const id = jobs.enqueue("purge", { blob_id: 999 });
-  const first = jobs.claim();
+  const first = jobs.claim()!;
   assert.equal(first.id, id);
   assert.equal(jobs.claim(), null);
-  const second = jobs.claim(first.lease_until + 121);
+  const second = jobs.claim(first.lease_until + 121)!;
   assert.equal(second.id, id);
   assert.notEqual(second.lease_token, first.lease_token);
   assert.equal(jobs.finish(first), 0);
@@ -162,8 +163,9 @@ test("failed jobs back off then remain inspectable as dead", () => {
     time += 400;
   }
   assert.equal(
-    jobs.jobsDb().prepare("SELECT status,attempts,last_error FROM jobs").get()
-      .status,
+    (jobs.jobsDb().prepare("SELECT status,attempts,last_error FROM jobs").get() as {
+      status: string;
+    }).status,
     "dead",
   );
   assert.equal(jobs.claim(time), null);
@@ -223,7 +225,10 @@ test("signed direct upload enforces checksum, actual ranges, draft ownership and
       },
     );
     assert.equal(creation.status, 200);
-    const blob = await creation.json();
+    const blob = (await creation.json()) as {
+    direct_upload: { url: string };
+    signed_id: string;
+  };
     let response = await fetch(blob.direct_upload.url, {
       method: "PUT",
       headers: { "Content-Type": "text/plain" },
@@ -250,7 +255,7 @@ test("signed direct upload enforces checksum, actual ranges, draft ownership and
     assert.equal(response.headers.get("content-range"), "bytes 2-5/10");
     assert.equal(await response.text(), "2345");
     assert.ok(
-      response.headers.get("content-disposition").startsWith("attachment;"),
+      response.headers.get("content-disposition")!.startsWith("attachment;"),
     );
     assert.equal(
       (await fetch(url, { headers: { "x-user": "1", Range: "bytes=40-" } }))
@@ -307,10 +312,10 @@ test("native audio/video/PDF analysis and previews use real ffmpeg/poppler", asy
   const vm = await storage.analyze(v);
   assert.equal(vm.width, 320);
   assert.equal(vm.height, 180);
-  assert.ok(vm.duration > 0);
+  assert.ok((vm.duration as number) > 0);
   const pv = await storage.preview(v);
   assert.equal(
-    (await sharp(storage.pathFor(pv.key)).metadata()).format,
+    (await sharp(storage.pathFor(pv!.key)).metadata()).format,
     "webp",
   );
   const a = storage.storeUpload(
@@ -323,7 +328,7 @@ test("native audio/video/PDF analysis and previews use real ffmpeg/poppler", asy
     104,
     "attachment",
   );
-  assert.ok((await storage.analyze(a)).duration > 0);
+  assert.ok(((await storage.analyze(a)).duration as number) > 0);
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -355,7 +360,7 @@ test("native audio/video/PDF analysis and previews use real ffmpeg/poppler", asy
     "attachment",
   );
   const pp = await storage.preview(p);
-  const pm = await sharp(storage.pathFor(pp.key)).metadata();
+  const pm = await sharp(storage.pathFor(pp!.key)).metadata();
   assert.equal(pm.format, "webp");
   assert.ok(pm.width <= 1200);
   assert.ok(pm.width > 0);
@@ -368,8 +373,8 @@ test("actual queued administrator webhook posts Rails JSON and persists bot repl
     name: "Human",
     email_address: "human@example.test",
     password_digest: await hashPassword("password123"),
-  });
-  const bot = createUser({ name: "Robot", role: 2, bot_token: "bot-token" });
+  })!;
+  const bot = createUser({ name: "Robot", role: 2, bot_token: "bot-token" })!;
   const time = now();
   const room = Number(
     run(
@@ -381,7 +386,11 @@ test("actual queued administrator webhook posts Rails JSON and persists bot repl
     ).lastInsertRowid,
   );
   grantMemberships({ id: room, type: "Rooms::Direct" }, [creator.id, bot.id]);
-  let received;
+  let received!: {
+    room: { path: string };
+    message: { body: { plain: string } };
+    user: { id: number };
+  };
   const receiver = http.createServer(async (req, res) => {
     let text = "";
     for await (const part of req) text += part;
@@ -396,12 +405,12 @@ test("actual queued administrator webhook posts Rails JSON and persists bot repl
       run(
         "INSERT INTO webhooks(user_id,url,created_at,updated_at) VALUES(?,?,?,?)",
         bot.id,
-        `http://127.0.0.1:${receiver.address().port}`,
+        `http://127.0.0.1:${(receiver.address() as AddressInfo).port}`,
         time,
         time,
       ).lastInsertRowid,
     );
-    const message = createMessage(room, creator.id, "Hello @Robot");
+    const message = createMessage(room, creator.id, "Hello @Robot")!;
     jobs.jobsDb().exec("DELETE FROM jobs");
     jobs.enqueue("webhook", { message_id: message.id, webhook_id: hook });
     assert.equal(await jobs.workOnce(), true);
@@ -419,24 +428,24 @@ test("actual queued administrator webhook posts Rails JSON and persists bot repl
     assert.equal(
       get(
         "SELECT body FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
-        reply.id,
-      ).body,
+        reply!.id,
+      )!.body,
       "Actual native reply",
     );
     assert.equal(
-      jobs
+      (jobs
         .jobsDb()
         .prepare(
           "SELECT count(*) AS n FROM jobs WHERE payload LIKE '%webhook%'",
         )
-        .get().n,
+        .get() as { n: number }).n,
       0,
     );
     assert.equal(
       get(
         "SELECT count(*) AS n FROM message_search_index WHERE rowid=?",
-        reply.id,
-      ).n,
+        reply!.id,
+      )!.n,
       1,
     );
   } finally {
@@ -499,7 +508,7 @@ test("private attached legacy blob requires actual room membership for download 
   );
   assert.equal(storage.authorizedBlob(blob, { id: u }), true);
   assert.equal(storage.authorizedBlob(blob, { id: outsider }), false);
-  const token = storage.blobUrl(blob).split("/")[5];
+  const token = storage.blobUrl(blob).split("/")[5]!;
   assert.throws(
     () => storage.attachSigned(token, "Message", 999, "attachment", outsider),
     /access denied/,
