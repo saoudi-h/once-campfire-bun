@@ -1,22 +1,28 @@
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
-let connection,
-  depth = 0;
-const callbacks = [];
-export function onCommit(fn) {
-  if (depth) callbacks.at(-1).push(fn);
+
+// Fluid row shape at the DB boundary: callers treat columns as `any` for
+// now; Phase 1 follow-ups will narrow these to per-table interfaces.
+export type Row = Record<string, any>;
+export type RunResult = { changes: number | bigint | undefined; lastInsertRowid: number | bigint | undefined };
+
+let connection: DatabaseSync | undefined;
+let depth = 0;
+const callbacks: Array<Array<() => void>> = [];
+export function onCommit(fn: () => void) {
+  if (depth) callbacks.at(-1)!.push(fn);
   else fn();
 }
 export function initialize(
-  path = process.env.DATABASE_PATH ||
+  path: string = process.env.DATABASE_PATH ||
     join(
       process.env.CAMPFIRE_STORAGE_PATH ||
         process.env.STORAGE_PATH ||
         "storage",
       "db/production.sqlite3",
     ),
-) {
+): DatabaseSync {
   if (connection) return connection;
   if (path !== ":memory:")
     mkdirSync(dirname(resolve(path)), { recursive: true });
@@ -35,23 +41,25 @@ export function initialize(
   connection.exec("PRAGMA journal_mode=WAL;");
   return connection;
 }
-export function db() {
+export function db(): DatabaseSync {
   return connection || initialize();
 }
-export function all(sql, ...params) {
+// node:sqlite params must be scalar values; `null` is allowed.
+type Param = SQLInputValue;
+export function all(sql: string, ...params: Param[]): Row[] {
   return db()
     .prepare(sql)
-    .all(...params);
+    .all(...params) as Row[];
 }
-export function get(sql, ...params) {
+export function get(sql: string, ...params: Param[]): Row | undefined {
   return db()
     .prepare(sql)
-    .get(...params);
+    .get(...params) as Row | undefined;
 }
-export function run(sql, ...params) {
+export function run(sql: string, ...params: Param[]): RunResult {
   return db()
     .prepare(sql)
-    .run(...params);
+    .run(...params) as unknown as RunResult;
 }
 export function now() {
   return new Date(process.env.CAMPFIRE_FROZEN_TIME || Date.now())
@@ -60,16 +68,17 @@ export function now() {
     .replace("Z", "")
     .replace(/(\.\d{3})$/, "$1000");
 }
-export function transaction(fn) {
+export function transaction<T>(fn: () => T): T {
   const name = `nested_${depth}`,
     nested = depth > 0;
   db().exec(nested ? `SAVEPOINT ${name}` : "BEGIN IMMEDIATE");
   depth++;
   callbacks.push([]);
-  let result, hooks;
+  let result: T;
+  let hooks: Array<() => void> | undefined;
   try {
-    result = fn();
-    if (result && typeof result.then === "function")
+    result = fn() as T;
+    if (result != null && typeof (result as unknown as { then?: unknown }).then === "function")
       throw new TypeError("SQLite transactions must be synchronous");
     db().exec(nested ? `RELEASE ${name}` : "COMMIT");
     hooks = callbacks.pop();
@@ -80,12 +89,12 @@ export function transaction(fn) {
   } finally {
     depth--;
   }
-  if (nested) callbacks.at(-1).push(...hooks);
-  else for (const callback of hooks) callback();
-  return result;
+  if (nested) callbacks.at(-1)!.push(...(hooks ?? []));
+  else for (const callback of hooks ?? []) callback();
+  return result!;
 }
 
-function validateSchema(connection) {
+function validateSchema(conn: DatabaseSync) {
   const required = {
     accounts: [
       "id",
@@ -193,10 +202,10 @@ function validateSchema(connection) {
   };
   for (const [table, columns] of Object.entries(required)) {
     const installed = new Set(
-      connection
+      conn
         .prepare(`PRAGMA table_info("${table}")`)
         .all()
-        .map((c) => c.name),
+        .map((c) => (c as Row).name),
     );
     const missing = columns.filter((c) => !installed.has(c));
     if (missing.length)
@@ -204,9 +213,9 @@ function validateSchema(connection) {
         `Unsupported Campfire database schema: ${table} missing ${missing.join(", ")}. Upgrade the Rails installation to the pinned reference schema before importing it.`,
       );
   }
-  const fts = connection
+  const fts = (conn
     .prepare("SELECT sql FROM sqlite_master WHERE name='message_search_index'")
-    .get()?.sql;
+    .get() as Row | undefined)?.sql as string | undefined;
   if (!/USING\s+fts5\b/i.test(fts || ""))
     throw new Error(
       "Unsupported Campfire database schema: message_search_index must be FTS5",

@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "bun bin/test.js"
+    "test": "bun bin/test.js",
+    "typecheck": "bunx --package typescript tsc --noEmit -p ."
   },
   "devDependencies": {
     "@types/bun": "latest"
