@@ -186,7 +186,7 @@ export function createApp() {
     await next();
   }
 
-  function finalize(req: CompatReq, res: CompatRes, request: Request, before = rails.stringify(req.session)): Response {
+  async function finalize(req: CompatReq, res: CompatRes, request: Request, before = rails.stringify(req.session)): Promise<Response> {
     const headers: Record<string, string> = { ...SEC_HEADERS };
     for (const [k, v] of Object.entries(res.headers)) headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
     const cookies = sessionCookieHeaders(req, before);
@@ -198,7 +198,9 @@ export function createApp() {
     const textual = /text|json|javascript|svg|manifest/.test(ctype);
     if (typeof body === "string" && textual && accept.includes("gzip") && body.length > 1024) {
       try {
-        const gz = Bun.gzipSync(Buffer.from(body));
+        // Async gzip runs off the JS thread; the sync variant
+        // blocked the single Bun thread on every large response.
+        const gz = await Bun.gzip(body);
         if (gz.length < body.length) { body = gz; headers["content-encoding"] = "gzip"; }
       } catch {}
     }
