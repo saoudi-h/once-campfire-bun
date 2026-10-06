@@ -1,4 +1,4 @@
-import { DatabaseSync } from "node:sqlite";
+import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -14,11 +14,11 @@ import {
   stagedFiles,
 } from "./storage.ts";
 
-let connection,
-  timer,
+let connection: Database | undefined,
+  timer: ReturnType<typeof setInterval> | undefined,
   working = false,
   stopping = false;
-export function jobsDb() {
+export function jobsDb(): Database {
   if (connection) return connection;
   const file =
     process.env.JOBS_DATABASE_PATH ||
@@ -29,16 +29,16 @@ export function jobsDb() {
       "db/jobs.sqlite3",
     );
   fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
-  connection = new DatabaseSync(file);
+  connection = new Database(file);
   connection.exec(
     "PRAGMA busy_timeout=10000;PRAGMA journal_mode=WAL;CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY,payload TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,available_at REAL NOT NULL,lease_until REAL,lease_token TEXT,status TEXT NOT NULL DEFAULT 'ready',last_error TEXT)",
   );
   return connection;
 }
-export function enqueue(kind, data) {
+export function enqueue(kind: string, data: unknown): number {
   return Number(
     jobsDb()
-      .prepare("INSERT INTO jobs(payload,available_at) VALUES(?,?)")
+      .query("INSERT INTO jobs(payload,available_at) VALUES(?,?)")
       .run(JSON.stringify({ kind, data }), Date.now() / 1000).lastInsertRowid,
   );
 }
@@ -47,16 +47,18 @@ export function claim(at = Date.now() / 1000) {
   db.exec("BEGIN IMMEDIATE");
   try {
     const row = db
-      .prepare(
+      .query(
         "SELECT * FROM jobs WHERE status='ready' AND available_at<=? AND (lease_until IS NULL OR lease_until<=?) ORDER BY id LIMIT 1",
       )
-      .get(at, at);
+      .get(at, at) as
+      | { id: number; attempts: number; payload: string }
+      | undefined;
     if (!row) {
       db.exec("COMMIT");
       return null;
     }
     const token = crypto.randomBytes(16).toString("hex");
-    db.prepare(
+    db.query(
       "UPDATE jobs SET attempts=attempts+1,lease_until=?,lease_token=? WHERE id=?",
     ).run(at + 120, token, row.id);
     db.exec("COMMIT");
@@ -71,14 +73,14 @@ export function claim(at = Date.now() / 1000) {
     throw error;
   }
 }
-export function finish(job, error = null, at = Date.now() / 1000) {
+export function finish(job: { id: number; lease_token: string; attempts: number }, error: unknown = null, at = Date.now() / 1000) {
   const db = jobsDb();
   if (!error)
     return db
-      .prepare("DELETE FROM jobs WHERE id=? AND lease_token=?")
+      .query("DELETE FROM jobs WHERE id=? AND lease_token=?")
       .run(job.id, job.lease_token).changes;
   return db
-    .prepare(
+    .query(
       "UPDATE jobs SET lease_until=NULL,lease_token=NULL,available_at=?,status=?,last_error=? WHERE id=? AND lease_token=?",
     )
     .run(
@@ -299,10 +301,10 @@ export async function workOnce() {
   const heartbeat = setInterval(() => {
     try {
       jobsDb()
-        .prepare("UPDATE jobs SET lease_until=? WHERE id=? AND lease_token=?")
+        .query("UPDATE jobs SET lease_until=? WHERE id=? AND lease_token=?")
         .run(Date.now() / 1000 + 120, job.id, job.lease_token);
     } catch (error) {
-      console.error("Campfire lease renewal failed:", error.message);
+      console.error("Campfire lease renewal failed:", (error as Error).message);
     }
   }, 30000);
   heartbeat.unref();

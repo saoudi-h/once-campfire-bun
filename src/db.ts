@@ -1,4 +1,4 @@
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 
@@ -7,7 +7,11 @@ import { dirname, resolve, join } from "node:path";
 export type Row = Record<string, any>;
 export type RunResult = { changes: number | bigint | undefined; lastInsertRowid: number | bigint | undefined };
 
-let connection: DatabaseSync | undefined;
+// The app issues ~150 distinct SQL strings; keep every prepared
+// statement in bun:sqlite's LRU cache so hot queries never re-prepare.
+Database.MAX_QUERY_CACHE_SIZE = 256;
+
+let connection: Database | undefined;
 let depth = 0;
 const callbacks: Array<Array<() => void>> = [];
 export function onCommit(fn: () => void) {
@@ -26,11 +30,11 @@ export function initialize(
   if (connection) return connection;
   if (path !== ":memory:")
     mkdirSync(dirname(resolve(path)), { recursive: true });
-  connection = new DatabaseSync(path);
+  connection = new Database(path);
   connection.exec("PRAGMA busy_timeout=10000; PRAGMA foreign_keys=ON;");
   if (
     !connection
-      .prepare("SELECT name FROM sqlite_master WHERE name='users'")
+      .query("SELECT name FROM sqlite_master WHERE name='users'")
       .get()
   ) {
     connection.exec(
@@ -41,24 +45,27 @@ export function initialize(
   connection.exec("PRAGMA journal_mode=WAL;");
   return connection;
 }
-export function db(): DatabaseSync {
+export function db(): Database {
   return connection || initialize();
 }
-// node:sqlite params must be scalar values; `null` is allowed.
-type Param = SQLInputValue;
+// bun:sqlite binds scalars (string/number/bigint/boolean/null/typed array).
+type Param = SQLQueryBindings;
 export function all(sql: string, ...params: Param[]): Row[] {
   return db()
-    .prepare(sql)
+    .query(sql)
     .all(...params) as Row[];
 }
 export function get(sql: string, ...params: Param[]): Row | undefined {
-  return db()
-    .prepare(sql)
-    .get(...params) as Row | undefined;
+  // bun:sqlite returns `null` for missing rows; node:sqlite
+  // returned `undefined`. Normalize so callers see one contract.
+  const row = db()
+    .query(sql)
+    .get(...params) as Row | null | undefined;
+  return row ?? undefined;
 }
 export function run(sql: string, ...params: Param[]): RunResult {
   return db()
-    .prepare(sql)
+    .query(sql)
     .run(...params) as unknown as RunResult;
 }
 export function now() {
@@ -94,7 +101,7 @@ export function transaction<T>(fn: () => T): T {
   return result!;
 }
 
-function validateSchema(conn: DatabaseSync) {
+function validateSchema(conn: Database) {
   const required = {
     accounts: [
       "id",
@@ -203,7 +210,7 @@ function validateSchema(conn: DatabaseSync) {
   for (const [table, columns] of Object.entries(required)) {
     const installed = new Set(
       conn
-        .prepare(`PRAGMA table_info("${table}")`)
+        .query(`PRAGMA table_info("${table}")`)
         .all()
         .map((c) => (c as Row).name),
     );
@@ -214,7 +221,7 @@ function validateSchema(conn: DatabaseSync) {
       );
   }
   const fts = (conn
-    .prepare("SELECT sql FROM sqlite_master WHERE name='message_search_index'")
+    .query("SELECT sql FROM sqlite_master WHERE name='message_search_index'")
     .get() as Row | undefined)?.sql as string | undefined;
   if (!/USING\s+fts5\b/i.test(fts || ""))
     throw new Error(
