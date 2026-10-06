@@ -26,7 +26,7 @@ export function initialize(
         "storage",
       "db/production.sqlite3",
     ),
-): DatabaseSync {
+): Database {
   if (connection) return connection;
   if (path !== ":memory:")
     mkdirSync(dirname(resolve(path)), { recursive: true });

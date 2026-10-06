@@ -2,6 +2,8 @@ import { Elysia } from "elysia";
 import { websocket } from "elysia/websocket";
 import path from "node:path";
 import fs from "node:fs";
+import { promisify } from "node:util";
+import { gzip as zlibGzip } from "node:zlib";
 import { initialize } from "./db.ts";
 import * as rails from "./rails.ts";
 import {
@@ -38,6 +40,12 @@ const SEC_HEADERS = {
   "x-frame-options": "SAMEORIGIN",
   "referrer-policy": "strict-origin-when-cross-origin",
 };
+
+// Express's compression() middleware deflates via node:zlib
+// on the libuv threadpool; the promisified form gives the
+// same behavior without blocking Bun's single JS thread
+// (Bun only ships the synchronous Bun.gzipSync).
+const gzipAsync = promisify(zlibGzip);
 
 // Elysia path syntax: Express `:param` works; Express `*` splat and
 // `:param(...)` patterns need translation; `{*name}` -> `*`.
@@ -198,9 +206,9 @@ export function createApp() {
     const textual = /text|json|javascript|svg|manifest/.test(ctype);
     if (typeof body === "string" && textual && accept.includes("gzip") && body.length > 1024) {
       try {
-        // Async gzip runs off the JS thread; the sync variant
-        // blocked the single Bun thread on every large response.
-        const gz = await Bun.gzip(body);
+        // Async deflate runs on the thread pool; the sync
+        // variant blocked the JS thread on every large response.
+        const gz = await gzipAsync(body);
         if (gz.length < body.length) { body = gz; headers["content-encoding"] = "gzip"; }
       } catch {}
     }
