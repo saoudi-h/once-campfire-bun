@@ -5,12 +5,13 @@ import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { CompatReq, CompatRes } from "./compat.ts";
+import type { Row } from "./db.ts";
 import sharp from "sharp";
 import { all, get, run, transaction, now } from "./db.ts";
 import * as rails from "./rails.ts";
 
 const execute = promisify(execFile);
-const staged = new AsyncLocalStorage();
+const staged = new AsyncLocalStorage<string[]>();
 export const filesPath = () =>
   path.resolve(
     process.env.FILES_PATH ||
@@ -21,30 +22,40 @@ export const filesPath = () =>
         "files",
       ),
   );
-export function pathFor(key) {
+export function pathFor(key: string) {
   if (!/^[a-zA-Z0-9]{4,128}$/.test(key)) throw new Error("invalid storage key");
   return path.join(filesPath(), key.slice(0, 2), key.slice(2, 4), key);
 }
-const checksum = (raw) => crypto.createHash("md5").update(raw).digest("base64");
-export function stagedFiles(fn) {
+const checksum = (raw: Buffer) => crypto.createHash("md5").update(raw).digest("base64");
+/** Multipart upload or direct-upload payload shape. */
+export interface StoredUpload {
+  buffer?: Buffer;
+  data?: Buffer;
+  originalname?: string;
+  filename?: string;
+  mimetype?: string;
+  content_type?: string;
+}
+export function stagedFiles<T>(fn: () => T): T {
   if (staged.getStore()) return fn();
-  const paths = [];
-  const clean = (error) => {
+  const paths: string[] = [];
+  const clean = (error: unknown) => {
     for (const file of paths) fs.rmSync(file, { force: true });
     throw error;
   };
   return staged.run(paths, () => {
     try {
-      const result = fn();
-      return result && typeof result.then === "function"
-        ? result.catch(clean)
-        : result;
+      const result = fn() as T | Promise<T>;
+      return (result &&
+      typeof (result as Promise<T>).then === "function"
+        ? (result as Promise<T>).catch(clean)
+        : result) as T;
     } catch (error) {
       return clean(error);
     }
   });
 }
-function write(key, raw) {
+function write(key: string, raw: Buffer) {
   const target = pathFor(key);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const tmp = `${target}.${crypto.randomBytes(8).toString("hex")}`;
@@ -56,7 +67,7 @@ function write(key, raw) {
   }
   staged.getStore()?.push(target);
 }
-export function storeUpload(upload, recordType, recordId, name) {
+export function storeUpload(upload: StoredUpload, recordType: string, recordId: number | string, name: string): Row {
   const raw = upload.buffer || upload.data;
   if (!Buffer.isBuffer(raw) || raw.length > 50 * 1024 * 1024)
     throw new Error("invalid upload");
@@ -85,11 +96,11 @@ export function storeUpload(upload, recordType, recordId, name) {
         id,
         now(),
       );
-      return get("SELECT * FROM active_storage_blobs WHERE id=?", id);
+      return get("SELECT * FROM active_storage_blobs WHERE id=?", id)!;
     }),
   );
 }
-export function attachSigned(token, recordType, recordId, name, userId = null) {
+export function attachSigned(token: string, recordType: string, recordId: number | string, name: string, userId: number | null = null): Row {
   const id = rails.verifyId("ActiveStorage::Blob", token, "blob_id");
   const blob = get("SELECT * FROM active_storage_blobs WHERE id=?", id);
   if (!blob || !fs.existsSync(pathFor(blob.key)))
@@ -109,13 +120,13 @@ export function attachSigned(token, recordType, recordId, name, userId = null) {
   );
   return blob;
 }
-export function removeAttachment(recordType, recordId, name) {
+export function removeAttachment(recordType: string, recordId: number | string, name: string): number[] {
   const ids = all(
     "SELECT blob_id FROM active_storage_attachments WHERE record_type=? AND record_id=? AND name=?",
     recordType,
     recordId,
     name,
-  ).map((r) => r.blob_id);
+  ).map((r) => Number(r.blob_id));
   run(
     "DELETE FROM active_storage_attachments WHERE record_type=? AND record_id=? AND name=?",
     recordType,
@@ -124,7 +135,7 @@ export function removeAttachment(recordType, recordId, name) {
   );
   return ids;
 }
-export function replaceAttachment(upload, recordType, recordId, name) {
+export function replaceAttachment(upload: StoredUpload, recordType: string, recordId: number | string, name: string) {
   return stagedFiles(() =>
     transaction(() => {
       const old = removeAttachment(recordType, recordId, name);
@@ -133,14 +144,14 @@ export function replaceAttachment(upload, recordType, recordId, name) {
     }),
   );
 }
-export function purgeBlob(id) {
+export function purgeBlob(id: number | string) {
   if (
     get("SELECT id FROM active_storage_attachments WHERE blob_id=? LIMIT 1", id)
   )
     return;
   const blob = get("SELECT * FROM active_storage_blobs WHERE id=?", id);
   if (!blob) return;
-  const children = [];
+  const children: number[] = [];
   transaction(() => {
     for (const variant of all(
       "SELECT id FROM active_storage_variant_records WHERE blob_id=?",
@@ -150,7 +161,7 @@ export function purgeBlob(id) {
         ...all(
           "SELECT blob_id FROM active_storage_attachments WHERE record_type='ActiveStorage::VariantRecord' AND record_id=?",
           variant.id,
-        ).map((r) => r.blob_id),
+        ).map((r) => Number(r.blob_id)),
       );
       run(
         "DELETE FROM active_storage_attachments WHERE record_type='ActiveStorage::VariantRecord' AND record_id=?",
@@ -161,7 +172,7 @@ export function purgeBlob(id) {
       ...all(
         "SELECT blob_id FROM active_storage_attachments WHERE record_type='ActiveStorage::Blob' AND record_id=?",
         id,
-      ).map((r) => r.blob_id),
+      ).map((r) => Number(r.blob_id)),
     );
     run(
       "DELETE FROM active_storage_attachments WHERE record_type='ActiveStorage::Blob' AND record_id=?",
@@ -173,10 +184,10 @@ export function purgeBlob(id) {
   fs.rmSync(pathFor(blob.key), { force: true });
   for (const child of children) purgeBlob(child);
 }
-export function blobUrl(blob) {
+export function blobUrl(blob: Row) {
   return `/rails/active_storage/blobs/redirect/${rails.signedId("ActiveStorage::Blob", blob.id, "blob_id")}/${encodeURIComponent(blob.filename)}`;
 }
-export function representationUrl(blob, dimensions = [1200, 800], format) {
+export function representationUrl(blob: Row, dimensions: number[] = [1200, 800], format?: string) {
   const transforms = {
     format: format || path.extname(blob.filename).slice(1) || "png",
     resize_to_limit: dimensions,
@@ -206,8 +217,10 @@ const inline = new Set([
   "image/vnd.microsoft.icon",
   "application/pdf",
 ]);
-export function servingAttributes(type, disposition = "inline") {
-  type = (type || "application/octet-stream").split(";")[0].toLowerCase();
+export function servingAttributes(type: string, disposition = "inline"): [string, string] {
+  type =
+    (type || "application/octet-stream").split(";")[0]?.toLowerCase() ||
+    "application/octet-stream";
   return binary.has(type)
     ? ["application/octet-stream", "attachment"]
     : [
@@ -248,7 +261,7 @@ export function serve(req: CompatReq, res: CompatRes, file: string, type: string
   (res as any).bunFile = Bun.file(file).slice(start, end + 1);
   return res.end();
 }
-export function authorizedBlob(blob, user) {
+export function authorizedBlob(blob: Row, user: Row | null | undefined): boolean {
   if (!user) return false;
   const attachments = all(
     "SELECT * FROM active_storage_attachments WHERE blob_id=?",
@@ -275,7 +288,7 @@ export function authorizedBlob(blob, user) {
     );
   });
 }
-export async function variant(blob, dimensions = [1200, 800], format) {
+export async function variant(blob: Row, dimensions: number[] = [1200, 800], format?: string): Promise<Row> {
   if (
     !Array.isArray(dimensions) ||
     dimensions.length !== 2 ||
@@ -299,9 +312,9 @@ export async function variant(blob, dimensions = [1200, 800], format) {
   if (existing && fs.existsSync(pathFor(existing.key))) return existing;
   const raw = await sharp(pathFor(blob.key), { limitInputPixels: 100_000_000 })
     .rotate()
-    .resize(...dimensions, { fit: "inside", withoutEnlargement: true })
+    .resize(dimensions[0], dimensions[1], { fit: "inside", withoutEnlargement: true })
     .sharpen()
-    .toFormat(format)
+    .toFormat(format as "png" | "jpeg" | "webp" | "gif" | "tiff" | "avif")
     .toBuffer();
   const metadata = await sharp(raw).metadata();
   return stagedFiles(() =>
@@ -351,8 +364,8 @@ export async function variant(blob, dimensions = [1200, 800], format) {
     }),
   );
 }
-export async function analyze(blob) {
-  let metadata = {
+export async function analyze(blob: Row): Promise<Record<string, unknown>> {
+  let metadata: Record<string, unknown> = {
     ...JSON.parse(blob.metadata || "{}"),
     identified: true,
     analyzed: true,
@@ -378,7 +391,10 @@ export async function analyze(blob) {
       ],
       { timeout: 30000, maxBuffer: 1024 * 1024 },
     );
-    const probe = JSON.parse(stdout);
+    const probe = JSON.parse(stdout) as {
+      format?: { duration?: string | number };
+      streams?: Array<{ codec_type?: string; width?: number; height?: number }>;
+    };
     metadata.duration = Number(probe.format?.duration || 0);
     const v = probe.streams?.find((s) => s.codec_type === "video");
     if (v)
@@ -391,7 +407,7 @@ export async function analyze(blob) {
   );
   return metadata;
 }
-export async function preview(blob) {
+export async function preview(blob: Row): Promise<Row | null> {
   const existing = get(
     "SELECT b.* FROM active_storage_attachments a JOIN active_storage_blobs b ON b.id=a.blob_id WHERE a.record_type='ActiveStorage::Blob' AND a.record_id=? AND a.name='preview_image'",
     blob.id,
@@ -454,7 +470,7 @@ export async function preview(blob) {
     fs.rmSync(temp, { recursive: true, force: true });
   }
 }
-export async function processAttachment(blob) {
+export async function processAttachment(blob: Row): Promise<Row | null | undefined> {
   await analyze(blob);
   if (
     /^image\/(png|jpeg|gif|tiff|webp|avif|heic|heif)$/.test(
@@ -538,7 +554,11 @@ export function registerStorage(
   rawBody("/rails/active_storage/disk/:token");
   add("PUT", "/rails/active_storage/disk/:token", (req, res) => {
     try {
-      const data = rails.verify(req.params.token, "ActiveStorage", "blob_token");
+      const data = rails.verify(req.params.token, "ActiveStorage", "blob_token") as {
+        key: string;
+        content_length: number;
+        checksum: string;
+      };
       const raw: Buffer = req.body as any;
       if (
         !Buffer.isBuffer(raw) ||
@@ -554,12 +574,19 @@ export function registerStorage(
   });
   add("GET", "/rails/active_storage/disk/:token/:filename", (req, res) => {
     try {
-      const data = rails.verify(req.params.token, "ActiveStorage", "blob_key");
+      const data = rails.verify(req.params.token, "ActiveStorage", "blob_key") as {
+        key: string;
+        content_type?: string;
+        disposition?: string;
+        filename?: string;
+      };
+      const [type] = servingAttributes(data.content_type || "", data.disposition);
+      const disposition = servingAttributes(data.content_type || "", data.disposition)[1];
       serve(
         req, res, pathFor(data.key),
-        ...servingAttributes(data.content_type, data.disposition).slice(0, 1),
+        type,
         data.filename || "file",
-        servingAttributes(data.content_type, data.disposition)[1],
+        disposition,
       );
     } catch {
       res.sendStatus(404);
@@ -575,7 +602,7 @@ export function registerStorage(
         );
         if (!blob) return res.sendStatus(404);
         if (!authorizedBlob(blob, req.user)) return res.sendStatus(403);
-        const [type, disposition] = servingAttributes(blob.content_type, req.query.disposition);
+        const [type, disposition] = servingAttributes(blob.content_type, req.query.disposition as string | undefined);
         serve(req, res, pathFor(blob.key), type, blob.filename, disposition);
       } catch {
         res.sendStatus(404);
@@ -591,14 +618,16 @@ export function registerStorage(
         );
         if (!blob) return res.sendStatus(404);
         if (!authorizedBlob(blob, req.user)) return res.sendStatus(403);
-        const transforms = rails.verify(req.params.variation, "ActiveStorage", "variation");
+        const transforms = rails.verify(req.params.variation, "ActiveStorage", "variation") as
+          | { resize_to_limit?: number[]; format?: string }
+          | undefined;
         if (!transforms || Object.keys(transforms).some((k) => !["format", "resize_to_limit"].includes(k)))
           return res.sendStatus(404);
         const source =
           blob.content_type === "application/pdf" || blob.content_type?.startsWith("video/")
             ? await preview(blob)
             : blob;
-        const out = await variant(source, transforms.resize_to_limit || [1200, 800], transforms.format);
+        const out = await variant(source as Row, transforms.resize_to_limit || [1200, 800], transforms.format);
         serve(req, res, pathFor(out.key), out.content_type, out.filename);
       } catch {
         res.sendStatus(404);
