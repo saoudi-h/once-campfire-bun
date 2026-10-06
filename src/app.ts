@@ -29,6 +29,7 @@ interface Entry { methods: Set<string>; handlers: Array<Handler | Middleware>; }
 
 interface ElysiaContext {
   request: Request;
+  path: string;
   params: Record<string, string | undefined>;
   query: Record<string, BodyValue>;
   body: unknown;
@@ -82,6 +83,12 @@ export function createApp() {
   registerOpengraph(add);
   registerRoutes(collector);
 
+  // Raw-upload routes must keep the untouched bytes. Compile
+  // their Express `:param` patterns once instead of per request.
+  const rawBodyPatterns = [...rawBodyPaths].map(
+    (p) => new RegExp("^" + p.replace(/:[^/]+/g, "[^/]+") + "$"),
+  );
+
   // Elysia 2 compiles route handlers just-in-time by default; `precompile`
   // warms them ahead of listen() for production-like latency.
   const elysia = new Elysia({ precompile: true });
@@ -116,7 +123,7 @@ export function createApp() {
     // Body: Elysia already parsed it into ctx.body (json/form/multipart).
     // Only raw-upload routes need the untouched bytes.
     let rawBody: Buffer | undefined = undefined;
-    const isRaw = [...rawBodyPaths].some((p) => matchRaw(p, new URL(request.url).pathname));
+    const isRaw = rawBodyPatterns.some((rx) => rx.test(ctx.path));
     let parsed: unknown = {};
     if (!isRaw) {
       parsed = ctx.body ?? {};
@@ -147,10 +154,9 @@ export function createApp() {
     }
     if (isRaw) req.body = rawBody;
     if (typeof parsed === "string") req.body = { ...(req.body || {}), _text: parsed };
-    await resolveFiles(req.files);
+    if (req.files?.length) await resolveFiles(req.files);
     // .json/.turbo_stream suffix strip (mirror of app.js rewrite middleware)
     if (!req.path.startsWith("/rails/active_storage/") && !req.path.startsWith("/webmanifest")) {
-      const m = req.path.match(/\.(json|turbo_stream)(\?|$)/);
       // operate on path only; query already parsed by Elysia
       const pm = /\.(json|turbo_stream)$/.exec(req.path);
       if (pm) { req.format = pm[1]; req.path = req.path.slice(0, -pm[0].length) || "/"; }
@@ -170,11 +176,6 @@ export function createApp() {
       res.status(st).send(st >= 500 ? "Internal Server Error" : error.message);
     }
     return finalize(req, res, request, before);
-  }
-
-  function matchRaw(pattern: string, pathname: string): boolean {
-    const rx = new RegExp("^" + pattern.replace(/:[^/]+/g, "[^/]+") + "$");
-    return rx.test(pathname);
   }
 
   async function dispatchChain(handlers: (Handler | Middleware)[], req: CompatReq, res: CompatRes) {

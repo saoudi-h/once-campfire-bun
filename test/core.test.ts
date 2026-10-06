@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Row } from "../src/db.ts";
+import type { CompatReq } from "../src/compat.ts";
 process.env.SECRET_KEY_BASE = "core-test-secret-".repeat(8);
 const temp = mkdtempSync(join(tmpdir(), "campfire-express-core-"));
 process.env.CAMPFIRE_STORAGE_PATH = temp;
@@ -13,7 +15,7 @@ const { plainText, sanitize, mentionIds } = await import("../src/richtext.ts");
 const rails = await import("../src/rails.ts");
 const { serveApp } = await import("./helper.ts");
 const { fragment, render } = await import("../src/rendering.ts");
-let admin, member, outsider, open, privateRoom;
+let admin: Row, member: Row, outsider: Row, open: Row, privateRoom: Row;
 before(async () => {
   initialize();
   const t = now();
@@ -30,18 +32,18 @@ before(async () => {
     email_address: "admin@example.test",
     password_digest: digest,
     role: 1,
-  });
+  })!;
   member = domain.createUser({
     name: "Member",
     email_address: "member@example.test",
     password_digest: digest,
-  });
+  })!;
   outsider = domain.createUser({
     name: "Outside",
     email_address: "outside@example.test",
     password_digest: digest,
-  });
-  const make = (name, type) => {
+  })!;
+  const make = (name: string, type: string) => {
     const r = run(
       "INSERT INTO rooms(name,type,creator_id,created_at,updated_at) VALUES(?,?,?,?,?)",
       name,
@@ -50,7 +52,7 @@ before(async () => {
       t,
       t,
     );
-    return get("SELECT * FROM rooms WHERE id=?", Number(r.lastInsertRowid));
+    return get("SELECT * FROM rooms WHERE id=?", Number(r.lastInsertRowid))!;
   };
   open = make("Open", "Rooms::Open");
   privateRoom = make("Secret", "Rooms::Closed");
@@ -58,7 +60,7 @@ before(async () => {
   domain.grantMemberships(privateRoom, [admin.id, member.id]);
 });
 test("synchronous nested transactions rollback together", async () => {
-  const n = get("SELECT count(*) n FROM users").n;
+  const n = get("SELECT count(*) n FROM users")!.n;
   const digest = await domain.hashPassword("password");
   assert.throws(() =>
     transaction(() => {
@@ -70,7 +72,7 @@ test("synchronous nested transactions rollback together", async () => {
       throw new Error("rollback");
     }),
   );
-  assert.equal(get("SELECT count(*) n FROM users").n, n);
+  assert.equal(get("SELECT count(*) n FROM users")!.n, n);
 });
 test("messages preserve schema, search index, raw timestamp cursors and membership authorization", () => {
   const m = domain.createMessage(
@@ -78,16 +80,16 @@ test("messages preserve schema, search index, raw timestamp cursors and membersh
     admin.id,
     "<p>Hello <strong>world</strong></p>",
     "client-1",
-  );
+  )!;
   assert.equal(
     get(
       "SELECT body FROM action_text_rich_texts WHERE record_id=? AND record_type='Message'",
       m.id,
-    ).body,
+    )!.body,
     "<p>Hello <strong>world</strong></p>",
   );
   assert.equal(
-    get("SELECT rowid FROM message_search_index WHERE body MATCH 'world'")
+    get("SELECT rowid FROM message_search_index WHERE body MATCH 'world'")!
       .rowid,
     m.id,
   );
@@ -100,7 +102,7 @@ test("messages preserve schema, search index, raw timestamp cursors and membersh
     "2026-01-01 00:00:00",
     m.id,
   );
-  const newer = domain.createMessage(open.id, admin.id, "later");
+  const newer = domain.createMessage(open.id, admin.id, "later")!;
   run(
     "UPDATE messages SET created_at=? WHERE id=?",
     "2026-01-01 00:00:01.000000",
@@ -116,14 +118,14 @@ test("messages preserve schema, search index, raw timestamp cursors and membersh
   );
 });
 test("updates replace FTS and deletes remove message and rich text", () => {
-  let m = domain.createMessage(open.id, member.id, "obsolete");
-  m = domain.updateMessage(m, "replacement");
+  let m = domain.createMessage(open.id, member.id, "obsolete")!;
+  m = domain.updateMessage(m, "replacement")!;
   assert.equal(
     get("SELECT rowid FROM message_search_index WHERE body MATCH 'obsolete'"),
     undefined,
   );
   assert.equal(
-    get("SELECT rowid FROM message_search_index WHERE body MATCH 'replacement'")
+    get("SELECT rowid FROM message_search_index WHERE body MATCH 'replacement'")!
       .rowid,
     m.id,
   );
@@ -163,7 +165,7 @@ test("retained frontend compiles room/login/sidebar/profile/admin screens", () =
     user: admin,
     session: {},
     csrfToken: "test-csrf",
-    get: (name) => (name === "host" ? "example.test" : null),
+    get: (name: string) => (name === "host" ? "example.test" : null),
     protocol: "http",
   };
   for (const screen of [
@@ -181,7 +183,7 @@ test("retained frontend compiles room/login/sidebar/profile/admin screens", () =
         ID: open.id,
         Name: "Open",
         Type: "Rooms::Open",
-        DOM: (p) => p + "_rooms_open_" + open.id,
+        DOM: (p: string) => p + "_rooms_open_" + open.id,
       },
       Messages: [],
     }).includes('name="message[body]"'),
@@ -195,7 +197,7 @@ test("HTTP actual cookie login, CSRF, rooms, search, posting and private denial"
   try {
     let response = await fetch(base + "/session/new");
     const html = await response.text();
-    const csrf = html.match(/name="csrf-token" content="([^"]+)"/)[1];
+    const csrf = html.match(/name="csrf-token" content="([^"]+)"/)![1]!;
     cookie = response.headers
       .getSetCookie()
       .map((c) => c.split(";")[0])
@@ -233,7 +235,7 @@ test("HTTP actual cookie login, CSRF, rooms, search, posting and private denial"
       }),
     });
     assert.equal(response.status, 201);
-    const message = await response.json();
+    const message = (await response.json()) as { body: { plain_text: string } };
     assert.equal(message.body.plain_text, "Persisted HTTP marker");
     assert.ok(
       get(
@@ -277,7 +279,7 @@ process.on("exit", () => rmSync(temp, { recursive: true, force: true }));
 import { readFileSync } from "node:fs";
 test("64 independent Rails canonical editor plaintext examples", () => {
   const vectors = JSON.parse(
-    readFileSync(new URL("../compat/richtext.json", import.meta.url)),
+    readFileSync(new URL("../compat/richtext.json", import.meta.url), "utf8"),
   );
   for (const example of vectors.cases)
     assert.equal(plainText(example.body), example.plain_text, example.name);
@@ -289,7 +291,7 @@ test("inline native attachments preserve rich text ownership, private authorizat
     privateRoom.id,
     admin.id,
     "private attachment",
-  );
+  )!;
   const blob = storeUpload(
     {
       buffer: Buffer.from("private content"),
@@ -301,22 +303,22 @@ test("inline native attachments preserve rich text ownership, private authorizat
     "attachment",
   );
   const html = `<p>Attachment <action-text-attachment sgid="${rails.sgid("ActiveStorage::Blob", blob.id)}"></action-text-attachment></p>`;
-  const n = get("SELECT count(*) n FROM messages").n;
+  const n = get("SELECT count(*) n FROM messages")!.n;
   assert.throws(
     () => domain.createMessage(open.id, outsider.id, html),
     /membership/,
   );
-  assert.equal(get("SELECT count(*) n FROM messages").n, n);
-  const message = domain.createMessage(privateRoom.id, member.id, html);
+  assert.equal(get("SELECT count(*) n FROM messages")!.n, n);
+  const message = domain.createMessage(privateRoom.id, member.id, html)!;
   const rich = get(
     "SELECT id FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
     message.id,
-  );
+  )!;
   assert.equal(
     get(
       "SELECT blob_id FROM active_storage_attachments WHERE record_type='ActionText::RichText' AND record_id=?",
       rich.id,
-    ).blob_id,
+    )!.blob_id,
     blob.id,
   );
   assert.equal(plainText(html), "Attachment [private.txt]");
@@ -352,7 +354,7 @@ test("failed image create and edit leave existing message body, attachments and 
         headers: { cookie: auth },
       }),
       html = await response.text(),
-      csrf = html.match(/name="csrf-token" content="([^"]+)"/)[1],
+      csrf = html.match(/name="csrf-token" content="([^"]+)"/)![1]!,
       cookie =
         auth +
         "; " +
@@ -360,7 +362,7 @@ test("failed image create and edit leave existing message body, attachments and 
           .getSetCookie()
           .map((c) => c.split(";")[0])
           .join("; ");
-    let m = domain.createMessage(open.id, admin.id, "Original atomic body");
+    let m = domain.createMessage(open.id, admin.id, "Original atomic body")!;
     const original = storeUpload(
       {
         buffer: Buffer.from("original file"),
@@ -379,10 +381,10 @@ test("failed image create and edit leave existing message body, attachments and 
           "active_storage_blobs",
           "active_storage_attachments",
           "active_storage_variant_records",
-        ].map((t) => [t, get(`SELECT count(*) n FROM ${t}`).n]),
+        ].map((t) => [t, get(`SELECT count(*) n FROM ${t}`)!.n]),
       );
     const before = snapshot();
-    const form = (method) => {
+    const form = (method: string | null) => {
       const body = new FormData();
       body.append("authenticity_token", csrf);
       if (method) body.append("_method", method);
@@ -397,7 +399,7 @@ test("failed image create and edit leave existing message body, attachments and 
     for (const [path, method] of [
       [`/rooms/${open.id}/messages`, null],
       [`/rooms/${open.id}/messages/${m.id}`, "patch"],
-    ]) {
+    ] as Array<[string, string | null]>) {
       const reply = await fetch(base + path, {
         method: "POST",
         headers: { cookie },
@@ -410,18 +412,18 @@ test("failed image create and edit leave existing message body, attachments and 
       get(
         "SELECT body FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
         m.id,
-      ).body,
+      )!.body,
       "Original atomic body",
     );
     assert.equal(
       get(
         "SELECT blob_id FROM active_storage_attachments WHERE record_type='Message' AND record_id=?",
         m.id,
-      ).blob_id,
+      )!.blob_id,
       original.id,
     );
     assert.equal(
-      get("SELECT rowid FROM message_search_index WHERE body MATCH 'Original'")
+      get("SELECT rowid FROM message_search_index WHERE body MATCH 'Original'")!
         .rowid,
       m.id,
     );
@@ -445,7 +447,7 @@ test("room namespaces cannot promote direct history or bypass shared room admini
       time,
     ).lastInsertRowid,
   );
-  const direct = get("SELECT * FROM rooms WHERE id=?", directId);
+  const direct = get("SELECT * FROM rooms WHERE id=?", directId)!;
   domain.grantMemberships(direct, [admin.id, member.id]);
   const sessionToken = "namespace-member-session";
   run(
@@ -467,7 +469,7 @@ test("room namespaces cannot promote direct history or bypass shared room admini
     });
     const csrf = (await loginPage.text()).match(
       /name="csrf-token" content="([^"]+)"/,
-    )[1];
+    )![1]!;
     const cookie =
       auth +
       "; " +
@@ -481,7 +483,7 @@ test("room namespaces cannot promote direct history or bypass shared room admini
         memberships: all("SELECT * FROM memberships ORDER BY id"),
       });
     const initial = snapshot();
-    const cases = [
+    const cases: Array<[string, string, number]> = [
       ["GET", "/rooms/unknown", 404],
       ["GET", `/rooms/opens/${direct.id}/edit`, 404],
       ["PATCH", `/rooms/opens/${direct.id}`, 404],
@@ -528,7 +530,7 @@ test("room namespaces cannot promote direct history or bypass shared room admini
 test("Attachment-only bot JSON and notification text use the original filename", async () => {
   const { messagePlainText } = await import("../src/richtext.ts");
   const { serializeMessage } = await import("../src/routes.ts");
-  const message = domain.createMessage(open.id, admin.id, "");
+  const message = domain.createMessage(open.id, admin.id, "")!;
   storeUpload(
     {
       buffer: Buffer.from("attachment-only"),
@@ -541,7 +543,10 @@ test("Attachment-only bot JSON and notification text use the original filename",
   );
   assert.equal(messagePlainText(message.id, ""), "contract-file.txt");
   assert.equal(messagePlainText(message.id, "<p>Caption</p>"), "Caption");
-  const req = { protocol: "http", get: () => "example.test" };
+  const req = {
+    protocol: "http",
+    get: (name: string): string | undefined => "example.test",
+  } as CompatReq;
   assert.equal(
     serializeMessage(message, req).body.plain_text,
     "contract-file.txt",
