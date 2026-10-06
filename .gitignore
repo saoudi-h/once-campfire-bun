@@ -1,0 +1,41 @@
+# dependencies (bun install)
+node_modules
+
+# rails reference checkout: inputs for bin/build-assets.js and runtime asset
+# reads (same subtree the Express port vendors via its git submodule)
+reference/
+
+# asset build output (bin/build-assets.js)
+assets/generated/
+
+# runtime state (SQLite dev databases, test sandboxes, bench output)
+storage/
+tmp/
+bench/
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
