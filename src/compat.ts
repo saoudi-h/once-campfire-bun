@@ -14,6 +14,8 @@ export interface CompatFile {
   buffer?: Buffer;
   data?: Buffer;
   size: number;
+  /** Original web File kept for native pipelines; resolved by resolveFiles. */
+  _webFile?: File;
 }
 
 export interface CompatReq {
@@ -21,8 +23,8 @@ export interface CompatReq {
   path: string;
   originalUrl: string;
   url: string;
-  params: Record<string, string>;
-  query: Record<string, any>;
+  params: Record<string, string | undefined>;
+  query: Record<string, BodyValue>;
   headers: Record<string, string | undefined>;
   cookies: Record<string, string>;
   body: any;
@@ -119,33 +121,35 @@ export function makeRes(): CompatRes {
   return res;
 }
 
-export function normalizeBody(raw: any): { body: any; files: CompatFile[] } {
+export type BodyValue = string | number | boolean | null | File | BodyValue[] | { [key: string]: BodyValue };
+
+export function normalizeBody(raw: unknown): { body: Record<string, BodyValue>; files: CompatFile[] } {
   const files: CompatFile[] = [];
-  const body: Record<string, any> =
-    raw && typeof raw === "object" && !(raw instanceof Buffer) && !(raw instanceof Uint8Array) ? { ...(raw as any) } : {};
+  const body: Record<string, BodyValue> =
+    raw && typeof raw === "object" && !(raw instanceof Buffer) && !(raw instanceof Uint8Array) ? { ...(raw as Record<string, BodyValue>) } : {};
   for (const [name, value] of Object.entries(body)) {
     if (value instanceof File) {
       files.push({
-        fieldname: name, originalname: (value as any).name || "file", filename: (value as any).name,
+        fieldname: name, originalname: value.name || "file", filename: value.name,
         mimetype: value.type || "application/octet-stream", content_type: value.type, size: value.size, buffer: undefined,
-        ...( { _webFile: value } as any),
-      } as CompatFile);
-      delete (body as any)[name];
+        _webFile: value,
+      });
+      delete body[name];
     } else if (Array.isArray(value) && value.some((v) => v instanceof File)) {
       for (const v of value)
         if (v instanceof File) files.push({
-          fieldname: name, originalname: (v as any).name || "file", filename: (v as any).name,
+          fieldname: name, originalname: v.name || "file", filename: v.name,
           mimetype: v.type || "application/octet-stream", content_type: v.type, size: v.size,
-          ...( { _webFile: v } as any),
-        } as CompatFile);
-      delete (body as any)[name];
+          _webFile: v,
+        });
+      delete body[name];
     }
   }
   for (const [name, value] of Object.entries({ ...body })) {
-    const parts = name.match(/[^\[\]]+/g) || [];
+    const parts = name.match(/[^[\]]+/g) || [];
     if (parts.length < 2 || parts.some((p) => ["__proto__", "constructor", "prototype"].includes(p))) continue;
-    let target: any = body;
-    for (const p of parts.slice(0, -1)) target = target[p] ||= Object.create(null);
+    let target: Record<string, BodyValue> = body;
+    for (const p of parts.slice(0, -1)) target = (target[p] as Record<string, BodyValue>) ||= Object.create(null);
     target[parts.at(-1)!] = value;
   }
   return { body, files };
@@ -154,33 +158,40 @@ export function normalizeBody(raw: any): { body: any; files: CompatFile[] } {
 export async function resolveFiles(files?: CompatFile[]): Promise<CompatFile[]> {
   if (!files) return [];
   for (const f of files) {
-    const web = (f as any)._webFile as File | undefined;
+    const web = f._webFile;
     if (web && !f.buffer) {
       const buf = Buffer.from(await web.arrayBuffer());
       f.buffer = buf; f.data = buf; f.size = buf.length;
-      delete (f as any)._webFile;
+      delete f._webFile;
     }
   }
   return files;
 }
 
-export function clientIp(headers: Record<string, string | undefined>, remote: string): string {
+export function clientIp(headers: Record<string, string | string[] | undefined>, remote: string): string {
   const trusted = (process.env.TRUSTED_PROXIES || "").split(",").filter(Boolean);
-  const fwd = headers["x-forwarded-for"];
+  const fwdRaw = headers["x-forwarded-for"];
+  const fwd = Array.isArray(fwdRaw) ? fwdRaw.join(",") : fwdRaw;
   if (trusted.includes(remote) && typeof fwd === "string" && fwd) {
-    const first = fwd.split(",")[0].trim().replace(/^::ffff:/, "");
+    const first = fwd.split(",")[0]?.trim().replace(/^::ffff:/, "") ?? "";
     if (first) return first;
   }
   return (remote || "").replace(/^::ffff:/, "");
 }
 
-export function isSecure(headers: Record<string, any>, remote: string): boolean {
+export function isSecure(headers: Record<string, string | undefined>, remote: string): boolean {
   const trusted = (process.env.TRUSTED_PROXIES || "").split(",").filter(Boolean);
   if (trusted.includes(remote) && headers["x-forwarded-proto"] === "https") return true;
   return false;
 }
 
-export function buildReq(ctx: any, rawBody: any, remoteAddr: string): CompatReq {
+export interface BuildContext {
+  request: Request;
+  params?: Record<string, string | undefined>;
+  query?: Record<string, BodyValue>;
+}
+
+export function buildReq(ctx: BuildContext, rawBody: unknown, remoteAddr: string): CompatReq {
   const request: Request = ctx.request;
   const url = new URL(request.url);
   const headers: Record<string, string | undefined> = {};
@@ -188,9 +199,9 @@ export function buildReq(ctx: any, rawBody: any, remoteAddr: string): CompatReq 
   const { body, files } = normalizeBody(rawBody);
   const methodOverride = request.method === "POST" ? String(body?._method || "").toUpperCase() : "";
   const method = ["PATCH", "PUT", "DELETE"].includes(methodOverride) ? methodOverride : request.method;
-  const ip = clientIp(headers as any, remoteAddr);
-  const secure = isSecure(headers as any, remoteAddr);
-  const cookies = parseCookies(headers.cookie || "");
+  const ip = clientIp(headers, remoteAddr);
+  const secure = isSecure(headers, remoteAddr);
+  const cookies = parseCookies(typeof headers.cookie === "string" ? headers.cookie : "");
   const req = {
     method, path: url.pathname, originalUrl: url.pathname + url.search, url: url.pathname + url.search,
     params: { ...(ctx.params || {}) }, query: { ...(ctx.query || {}) },
@@ -212,17 +223,17 @@ export function buildReq(ctx: any, rawBody: any, remoteAddr: string): CompatReq 
     is(type: string) { return (headers["content-type"] || "").includes(type); },
   } as CompatReq;
   try {
-    const session = rails.decryptCookie("_campfire_session", req.cookies._campfire_session);
+    const session = rails.decryptCookie("_campfire_session", req.cookies._campfire_session || "");
     if (session && typeof session === "object" && !Array.isArray(session)) req.session = session;
   } catch {}
   // Snapshot BEFORE csrf/session_id initialization (mirrors app.js `before`).
-  (req as any).sessionBefore = rails.stringify(req.session);
+  (req as { sessionBefore?: string }).sessionBefore = rails.stringify(req.session);
   try {
     if (rails.decode64(req.session._csrf_token).length !== 32) delete req.session._csrf_token;
   } catch { delete req.session._csrf_token; }
   req.session.session_id ||= randomBytes(16).toString("hex");
   req.session._csrf_token ||= rails.b64(randomBytes(32));
-  req.csrfToken = rails.maskCsrf(rails.decode64(req.session._csrf_token));
+  req.csrfToken = (req.session._csrf_token as string | undefined) ? rails.maskCsrf(rails.decode64(req.session._csrf_token as string)) : "";
   req.currentSession = authenticateCookies(headers.cookie);
   req.user = req.currentSession ? get("SELECT * FROM users WHERE id=?", req.currentSession.user_id) : null;
   req.account = get("SELECT * FROM accounts ORDER BY id LIMIT 1");
@@ -236,8 +247,11 @@ export function buildReq(ctx: any, rawBody: any, remoteAddr: string): CompatReq 
       req.authenticatedByBot = Boolean(req.user);
     }
   }
-  if (req.currentSession && new Date(req.currentSession.last_active_at.replace(" ", "T") + "Z").getTime() < Date.now() - 3600000)
-    run("UPDATE sessions SET last_active_at=?,updated_at=?,user_agent=?,ip_address=? WHERE id=?", now(), now(), headers["user-agent"] || "", ip, req.currentSession.id);
+  if (req.currentSession && req.currentSession.last_active_at) {
+    const lastActive = new Date(String(req.currentSession.last_active_at).replace(" ", "T") + "Z").getTime();
+    if (Number.isFinite(lastActive) && lastActive < Date.now() - 3600000)
+      run("UPDATE sessions SET last_active_at=?,updated_at=?,user_agent=?,ip_address=? WHERE id=?", now(), now(), headers["user-agent"] || "", ip, req.currentSession.id);
+  }
   return req;
 }
 

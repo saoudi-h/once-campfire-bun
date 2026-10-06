@@ -4,7 +4,14 @@ import path from "node:path";
 import fs from "node:fs";
 import { initialize } from "./db.ts";
 import * as rails from "./rails.ts";
-import { registerRoutes, type RouteCollector, type Handler, type Middleware } from "./routes.ts";
+import {
+  registerRoutes,
+  type CompatReq,
+  type CompatRes,
+  type RouteCollector,
+  type Handler,
+  type Middleware,
+} from "./routes.ts";
 import { registerStorage } from "./storage.ts";
 import { registerPublic } from "./public.ts";
 import { registerOpengraph } from "./opengraph.ts";
@@ -12,10 +19,19 @@ import { allowLogin } from "./rate_limit.ts";
 import { cableWs, startCablePing } from "./cable.ts";
 import {
   buildReq, makeRes, sessionCookieHeaders, guardRequest, resolveFiles,
-  type CompatReq, type CompatRes,
+  type CompatReq as FacadeReq, type CompatRes as FacadeRes,
+  type CompatFile, type BodyValue,
 } from "./compat.ts";
 
-interface Entry { methods: Set<string>; handlers: (Handler | Middleware)[]; }
+interface Entry { methods: Set<string>; handlers: Array<Handler | Middleware>; }
+
+interface ElysiaContext {
+  request: Request;
+  params: Record<string, string | undefined>;
+  query: Record<string, BodyValue>;
+  body: unknown;
+  store: Record<string, unknown>;
+}
 
 const SEC_HEADERS = {
   "x-content-type-options": "nosniff",
@@ -44,7 +60,7 @@ export function createApp() {
     delete: (p, ...h) => reg("DELETE", p, h),
     all: (p, ...h) => reg("ALL", p, h),
   };
-  function reg(method: string, p: string | string[], h: (Handler | Middleware)[]) {
+  function reg(method: string, p: string | string[], h: Array<Handler | Middleware>) {
     for (const path of Array.isArray(p) ? p : [p]) {
       let e = routes.get(path);
       if (!e) { e = { methods: new Set(), handlers: [] }; routes.set(path, e); }
@@ -58,7 +74,9 @@ export function createApp() {
   registerOpengraph(add);
   registerRoutes(collector);
 
-  const elysia = new Elysia({ aot: false });
+  // Elysia 2 compiles route handlers just-in-time by default; `precompile`
+  // warms them ahead of listen() for production-like latency.
+  const elysia = new Elysia({ precompile: true });
   elysia.use(websocket());
 
   // --- /cable WebSocket (Action Cable) ---
@@ -85,21 +103,21 @@ export function createApp() {
     }
   }
 
-  async function runHandlers(ctx: any, handlers: (Handler | Middleware)[], origPath: string) {
+  async function runHandlers(ctx: ElysiaContext, handlers: Array<Handler | Middleware>, origPath: string) {
     const request: Request = ctx.request;
     // Body: Elysia already parsed it into ctx.body (json/form/multipart).
     // Only raw-upload routes need the untouched bytes.
-    let rawBody: any = undefined;
+    let rawBody: Buffer | undefined = undefined;
     const isRaw = [...rawBodyPaths].some((p) => matchRaw(p, new URL(request.url).pathname));
-    let parsed: any = {};
+    let parsed: unknown = {};
     if (!isRaw) {
-      parsed = (ctx as any).body ?? {};
+      parsed = ctx.body ?? {};
       if (parsed instanceof FormData) {
-        const obj: Record<string, any> = {};
-        for (const [k, v] of parsed as any) {
-          if (obj[k] === undefined) obj[k] = v;
-          else if (Array.isArray(obj[k])) obj[k].push(v);
-          else obj[k] = [obj[k], v];
+        const obj: Record<string, string | File | Array<string | File>> = {};
+        for (const [k, v] of parsed.entries()) {
+          if (obj[k] === undefined) obj[k] = v as string | File;
+          else if (Array.isArray(obj[k])) (obj[k] as Array<string | File>).push(v as string | File);
+          else obj[k] = [obj[k] as string | File, v as string | File];
         }
         parsed = obj;
       }
@@ -108,11 +126,11 @@ export function createApp() {
     }
     // Remote address for trust-proxy/IP logic.
     let remote = "";
-    try { remote = String((elysia.server?.requestIP?.(request) as any)?.address || ""); } catch {}
+    try { remote = String((elysia.server?.requestIP?.(request) as { address?: unknown } | undefined)?.address || ""); } catch {}
     const req = buildReq({ request, params: ctx.params, query: ctx.query }, parsed, remote);
     // botKey composite segment fallback: /rooms/:roomId/* -> split botKey/messages...
     if (req.params["*"] !== undefined && origPath.includes("/:botKey/")) {
-      const rest = String(req.params["*"] || "").split("/");
+      const rest = String(req.params["*"] ?? "").split("/");
       if (rest.length >= 2 && rest[1] === "messages") {
         req.params.botKey = rest[0];
         req.params.id = rest[2] || "";
@@ -156,9 +174,10 @@ export function createApp() {
     async function next(): Promise<void> {
       i++;
       if (i >= handlers.length) return;
-      const h = handlers[i];
+      const h = handlers[i] as Handler | Middleware | undefined;
+      if (!h) return;
       if (h.length >= 3) await (h as Middleware)(req, res, next);
-      else await (h as Handler)(req, res);
+      else await (h as Handler)(req, res, next);
     }
     // Express semantics: run chain until a handler ends the response.
     // Our facade has no "ended" flag; replicate Express by running the

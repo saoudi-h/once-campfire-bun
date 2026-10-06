@@ -22,9 +22,9 @@ export const parseJSON = (text) =>
       ? BigInt(context.source)
       : v,
   );
-export const stringify = (value) =>
+export const stringify = (value: unknown): string =>
   JSON.stringify(value, (k, v) =>
-    typeof v === "bigint" ? JSON.rawJSON(v.toString()) : v,
+    typeof v === "bigint" ? (JSON as unknown as { rawJSON(s: string): unknown }).rawJSON(v.toString()) : v,
   );
 export const encode = (value) =>
   Buffer.from(
@@ -191,17 +191,21 @@ export function unpack(raw, purpose = null) {
   if (purpose) throw new Error("missing purpose");
   return v;
 }
+export interface SignOptions {
+  plainJson?: boolean;
+}
+
 export function sign(
-  value,
-  salt,
-  purpose = null,
-  expiry = null,
+  value: unknown,
+  salt: string,
+  purpose: string | null = null,
+  expiry: Date | string | number | null = null,
   algorithm = "sha1",
   urlsafe = false,
   padded = true,
-  options = {},
-) {
-  const m = { data: value };
+  options: SignOptions = {},
+): string {
+  const m: { data: unknown; exp?: string; pur?: string } = { data: value };
   if (expiry) m.exp = new Date(expiry).toISOString();
   if (purpose) m.pur = purpose;
   const envelope = purpose || expiry ? { _rails: m } : value;
@@ -222,7 +226,7 @@ export function verify(raw: unknown, salt: string, purpose: string | null = null
     throw new Error("invalid signature");
   return unpack(decode64(payload), purpose);
 }
-function cookieEnvelope(name, value, expiry = null) {
+function cookieEnvelope(name: string, value: unknown, expiry: Date | null = null): Buffer {
   return encode({
     _rails: {
       message: b64(encode(value)),
@@ -268,10 +272,10 @@ export function encryptCookie(name: string, value: unknown, expiry: Date | null 
   ]);
   return [data, nonce, cipher.getAuthTag()].map(b64).join("--");
 }
-export function decryptCookie(name, raw) {
+export function decryptCookie(name: string, raw: string): unknown {
   const parts = decodeURIComponent(raw).split("--");
   if (parts.length !== 3) throw new Error("invalid cookie");
-  const [data, nonce, tag] = parts.map(decode64);
+  const [data, nonce, tag] = parts.map(decode64) as [Buffer, Buffer, Buffer];
   if (nonce.length !== 12 || tag.length !== 16)
     throw new Error("invalid cookie");
   const cipher = createDecipheriv(
@@ -308,7 +312,7 @@ export function signedId(model, id, purpose = "", expiry = null) {
         { plainJson: true },
       );
 }
-export function verifyId(model, raw, purpose = "") {
+export function verifyId(model: string, raw: unknown, purpose = ""): number | bigint {
   let value;
   if (model === "ActiveStorage::Blob")
     value = verify(raw, "ActiveStorage", purpose || "blob_id");
@@ -345,7 +349,7 @@ export const signStream = (name) =>
     true,
     { plainJson: true },
   );
-export function verifyStream(raw) {
+export function verifyStream(raw: unknown): string | number {
   const v = verify(raw, "turbo/signed_stream_verifier_key", null, "sha256");
   if (typeof v !== "string" && typeof v !== "number")
     throw new Error("invalid stream");
@@ -397,15 +401,15 @@ export function unverifiedUserGid(raw) {
     return null;
   }
 }
-export function maskCsrf(raw) {
+export function maskCsrf(raw: Uint8Array | number[]): string {
   if (raw.length !== 32) throw new Error("invalid CSRF secret");
   const pad = randomBytes(32);
   return Buffer.concat([
     pad,
-    Buffer.from(raw.map((x, i) => x ^ pad[i])),
+    Buffer.from((Array.from(raw) as number[]).map((x, i) => x ^ (pad[i] as number))),
   ]).toString("base64url");
 }
-export function validCsrf(raw, token, path = null, method = null) {
+export function validCsrf(raw: Uint8Array | number[], token: string, path: string | null = null, method: string | null = null) {
   try {
     if (raw.length !== 32) return false;
     let v = decode64(token);

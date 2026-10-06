@@ -41,6 +41,28 @@ import {
 } from "./storage.ts";
 import { enqueue } from "./jobs.ts";
 import type { CompatReq, CompatRes } from "./compat.ts";
+
+/** Express-style handler: reads CompatReq, writes CompatRes. */
+export interface Handler {
+  (req: CompatReq, res: CompatRes, next?: () => Promise<void> | void): unknown;
+}
+
+/** Express-style middleware: must call next() to continue the chain. */
+export interface Middleware {
+  (req: CompatReq, res: CompatRes, next: () => Promise<void> | void): unknown;
+}
+
+/** Subset of Express app registration consumed by registerRoutes. */
+export interface RouteCollector {
+  get(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
+  post(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
+  put(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
+  patch(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
+  delete(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
+  all(path: string | string[], ...handlers: Array<Handler | Middleware>): void;
+}
+
+export type { CompatReq, CompatRes };
 import nunjucks from "nunjucks";
 const token = () => randomBytes(18).toString("base64url");
 const origin = (req) => `${req.protocol}://${req.get("host")}`;
