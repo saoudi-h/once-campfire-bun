@@ -127,23 +127,40 @@ export function normalizeBody(raw: unknown): { body: Record<string, BodyValue>; 
   const files: CompatFile[] = [];
   const body: Record<string, BodyValue> =
     raw && typeof raw === "object" && !(raw instanceof Buffer) && !(raw instanceof Uint8Array) ? { ...(raw as Record<string, BodyValue>) } : {};
-  for (const [name, value] of Object.entries(body)) {
+  // Elysia parses multipart bodies into nested objects
+  // (message[attachment] becomes body.message.attachment). Lift File
+  // values out to req.files under their bracketed field names, whatever
+  // their depth, so file(req, "message[attachment]") finds them.
+  const fieldname = (path: string[]) => path.map((part, i) => (i ? `[${part}]` : part)).join("");
+  const lift = (value: BodyValue, path: string[]): BodyValue | undefined => {
     if (value instanceof File) {
       files.push({
-        fieldname: name, originalname: value.name || "file", filename: value.name,
+        fieldname: fieldname(path), originalname: value.name || "file", filename: value.name,
         mimetype: value.type || "application/octet-stream", content_type: value.type, size: value.size, buffer: undefined,
         _webFile: value,
       });
-      delete body[name];
-    } else if (Array.isArray(value) && value.some((v) => v instanceof File)) {
-      for (const v of value)
-        if (v instanceof File) files.push({
-          fieldname: name, originalname: v.name || "file", filename: v.name,
-          mimetype: v.type || "application/octet-stream", content_type: v.type, size: v.size,
-          _webFile: v,
-        });
-      delete body[name];
+      return undefined;
     }
+    if (Array.isArray(value)) {
+      const kept = value.flatMap((item) => {
+        const lifted = lift(item, path);
+        return lifted === undefined ? [] : [lifted];
+      });
+      return kept.length ? kept : undefined;
+    }
+    if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value as Record<string, BodyValue>)) {
+        const lifted = lift(item, [...path, key]);
+        if (lifted === undefined) delete (value as Record<string, BodyValue>)[key];
+        else (value as Record<string, BodyValue>)[key] = lifted;
+      }
+    }
+    return value;
+  };
+  for (const [name, value] of Object.entries(body)) {
+    const lifted = lift(value, name.split(/[\[\]]+/).filter(Boolean));
+    if (lifted === undefined) delete body[name];
+    else body[name] = lifted;
   }
   for (const [name, value] of Object.entries({ ...body })) {
     const parts = name.match(/[^[\]]+/g) || [];
