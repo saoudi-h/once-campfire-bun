@@ -1,6 +1,6 @@
 {
   "name": "once-campfire-bun",
-  "module": "index.ts",
+  "module": "src/server.ts",
   "type": "module",
   "private": true,
   "scripts": {
