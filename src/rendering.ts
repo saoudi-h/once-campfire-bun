@@ -108,7 +108,8 @@ export function messageData(messages: Row[], origin = "") {
   );
   return messages.map((m) => {
     const blob = blobs.get(m.id);
-    let body = renderBody(bodies.get(m.id) || "");
+    const rawBody = bodies.get(m.id) || "";
+    let body = renderBody(rawBody);
     let url = "";
     if (blob) {
       url = blobUrl(blob);
@@ -122,6 +123,9 @@ export function messageData(messages: Row[], origin = "") {
         body = `<video src="${url}" poster="${representationUrl(blob, [1200, 800], undefined!)}" controls class="message__attachment"></video>`;
       else body = `<a href="${url}?disposition=attachment">${name}</a>`;
     }
+    // plainText() parses the body with parse5: compute once per
+    // message instead of twice (was called again in the regex).
+    const text = plainText(rawBody);
     return {
       ID: m.id,
       ClientID: m.client_message_id,
@@ -136,9 +140,7 @@ export function messageData(messages: Row[], origin = "") {
       CreatedAt: m.created_at,
       UpdatedAt: m.updated_at,
       HTML: safe('<div class="lexxy-content">' + body + "</div>"),
-      AllEmoji:
-        !!plainText(bodies.get(m.id)) &&
-        !/[\p{L}\p{N}]/u.test(plainText(bodies.get(m.id))),
+      AllEmoji: !!text && !/[\p{L}\p{N}]/u.test(text),
       Boosts: boosts
         .filter((b) => b.message_id === m.id)
         .map((b) => ({
@@ -226,14 +228,25 @@ for (const [name, fn] of Object.entries({
     ),
 }))
   env.addGlobal(name, fn);
+// Precompiled screen wrappers: fragment() used to call
+// env.renderString(), which runs `new Template(src)` on every
+// request (nunjucks/src/environment.js). The wrapper source is
+// fixed per screen name (a bounded set), so compile once and
+// render the cached template instead.
+const wrapperCache = new Map<string, { render: (ctx: unknown) => string }>();
+function wrapperFor(name: string): { render: (ctx: unknown) => string } {
+  const key = name.replaceAll("-", "_");
+  const cached = wrapperCache.get(key);
+  if (cached) return cached;
+  const tpl = nunjucks.compile(`{% import "pages.html" as p %}{{ p.${key}(dot) }}`, env);
+  wrapperCache.set(key, tpl);
+  return tpl;
+}
 export function fragment(
   name: string,
   data: Record<string, unknown> = {},
 ): string {
-  return env.renderString(
-    `{% import "pages.html" as p %}{{ p.${name.replaceAll("-", "_")}(dot) }}`,
-    { dot: data },
-  );
+  return wrapperFor(name).render({ dot: data });
 }
 export function render(
   req: CompatReq,
