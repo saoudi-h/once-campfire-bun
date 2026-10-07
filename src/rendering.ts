@@ -56,6 +56,22 @@ const FRAGMENT_PRUNE_TO = Math.floor(FRAGMENT_MAX_BYTES * 0.75);
 const FRAGMENT_ENTRY_OVERHEAD = 240;
 const fragmentStore = new Map<string, { html: string; bytes: number }>();
 let fragmentBytes = 0;
+// Rendered body-HTML cache: renderBody()/plainText() re-parse each message
+// body with parse5 on every request, although the body only changes when
+// the message's updated_at changes. Memoize per message version.
+const bodyHtmlCache = new Map<string, { body: string; text: string; bytes: number }>();
+export function bodyCacheStats() {
+  return { entries: bodyHtmlCache.size };
+}
+function bodyHtmlFor(id: unknown, updatedAt: unknown, raw: string): { body: string; text: string } {
+  const key = `body/${id}-${updatedAt}`;
+  const hit = bodyHtmlCache.get(key);
+  if (hit) return hit;
+  const entry = { body: renderBody(raw), text: plainText(raw), bytes: 0 };
+  entry.bytes = key.length + entry.body.length + entry.text.length + FRAGMENT_ENTRY_OVERHEAD;
+  bodyHtmlCache.set(key, entry);
+  return entry;
+}
 export function fragmentCacheStats() {
   return { entries: fragmentStore.size, bytes: fragmentBytes };
 }
@@ -154,7 +170,9 @@ export function messageData(messages: Row[], origin = "") {
   return messages.map((m) => {
     const blob = blobs.get(m.id);
     const rawBody = bodies.get(m.id) || "";
-    let body = renderBody(rawBody);
+    const cached = bodyHtmlFor(m.id, m.updated_at, rawBody);
+    let body = cached.body;
+    const text = cached.text;
     let url = "";
     if (blob) {
       url = blobUrl(blob);
@@ -168,9 +186,6 @@ export function messageData(messages: Row[], origin = "") {
         body = `<video src="${url}" poster="${representationUrl(blob, [1200, 800], undefined!)}" controls class="message__attachment"></video>`;
       else body = `<a href="${url}?disposition=attachment">${name}</a>`;
     }
-    // plainText() parses the body with parse5: compute once per
-    // message instead of twice (was called again in the regex).
-    const text = plainText(rawBody);
     return {
       ID: m.id,
       ClientID: m.client_message_id,
