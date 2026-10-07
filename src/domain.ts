@@ -8,7 +8,7 @@ import {
 } from "./richtext.ts";
 import { publish } from "./cable.ts";
 import { stream } from "./rails.ts";
-import { fragment, messageData } from "./rendering.ts";
+import { messageFragment, messageData } from "./rendering.ts";
 import { enqueue } from "./jobs.ts";
 export const userById = (id: string | number) =>
   get("SELECT * FROM users WHERE id=?", Number(id));
@@ -298,7 +298,7 @@ export function publishMessage(message: Row, action = "append") {
   const html =
     action === "remove"
       ? ""
-      : fragment("message", messageData([messageById(message.id)!])[0]);
+      : messageFragment(messageData([messageById(message.id)!])[0]!);
   publish(
     stream(room),
     `<turbo-stream action="${action}" target="${target}" maintain_scroll="true"><template>${html}</template></turbo-stream>`,

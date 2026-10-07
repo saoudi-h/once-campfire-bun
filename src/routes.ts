@@ -21,6 +21,8 @@ import {
   render,
   fragment,
   messageData,
+  messageFragment,
+  messagesHtml,
   roomData,
   userData,
   avatar,
@@ -390,12 +392,14 @@ export function registerRoutes(app: RouteCollector) {
         room.id,
         req.user.id,
       );
+      const roomMessages = messageData(
+        messagesForRoom(room.id, { around: req.params.messageId }),
+        origin(req),
+      );
       send(req, res, "room", {
         Room: roomData(room, req.user),
-        Messages: messageData(
-          messagesForRoom(room.id, { around: req.params.messageId }),
-          origin(req),
-        ),
+        Messages: roomMessages,
+        MessagesHTML: messagesHtml(roomMessages),
         LoadedAt: epoch(room.updated_at),
         Stream: rails.signStream(rails.stream(room)),
         Involvement: membership!.involvement,
@@ -502,11 +506,15 @@ export function registerRoutes(app: RouteCollector) {
               : rows.map((m) => serializeMessage(m, req)),
           );
         }
-        return message
-          ? send(req, res, "show-message", { Messages: messageData(rows) })
-          : res
-              .type("html")
-              .send(fragment("messages", { Messages: messageData(rows) }));
+        if (message) return send(req, res, "show-message", { Messages: messageData(rows) });
+        return res
+          .type("html")
+          .send(
+            fragment("messages", {
+              Messages: messageData(rows),
+              MessagesHTML: messagesHtml(messageData(rows)),
+            }),
+          );
       }
       if (message && !can(user, message)) return res.sendStatus(403);
       const item = attachment(req),
@@ -554,7 +562,7 @@ export function registerRoutes(app: RouteCollector) {
           res,
           "append",
           `messages_rooms_${room.type.split("::").pop().toLowerCase()}_${room.id}`,
-          fragment("message", messageData([messageById(message!.id)!])[0]!),
+          messageFragment(messageData([messageById(message!.id)!])[0]!),
         );
       }
       if (["PATCH", "PUT"].includes(req.method)) {
@@ -603,7 +611,7 @@ export function registerRoutes(app: RouteCollector) {
               action === "append"
                 ? `messages_rooms_${room.type.split("::").pop().toLowerCase()}_${room.id}`
                 : "message_" + m.client_message_id;
-          return `<turbo-stream action="${action}" target="${target}"><template>${fragment("message", messageData([messageById(m.id)!])[0]!)}</template></turbo-stream>`;
+          return `<turbo-stream action="${action}" target="${target}"><template>${messageFragment(messageData([messageById(m.id)!])[0]!)}</template></turbo-stream>`;
         })
         .join(""),
     );
@@ -1318,8 +1326,10 @@ function registerSearch(app: RouteCollector) {
         .map((id) => messageById(id)!)
         .sort((a, b) => a.created_at.localeCompare(b.created_at));
     }
+    const searchMessages = messageData(rows);
     send(req, res, "search", {
-      Messages: messageData(rows),
+      Messages: searchMessages,
+      MessagesHTML: messagesHtml(searchMessages),
       Query: query,
       RecentSearches: all(
         "SELECT query FROM searches WHERE user_id=? ORDER BY updated_at DESC LIMIT 10",

@@ -46,6 +46,51 @@ export function versionTime(value: unknown) {
     .replace(/[-:T]/g, "")
     .slice(0, 14);
 }
+// Fragment cache (Rails `cache record do` / Rust `FragmentCache` port): the
+// room page re-renders every message on each request although the HTML
+// of a message version never changes. Cache the rendered `_message`
+// partial keyed by message id + updated_at (Rails `cache_key_with_version`),
+// bounded at 32MB with LRU eviction like ActiveSupport::MemoryStore.
+const FRAGMENT_MAX_BYTES = 32 * 1024 * 1024;
+const FRAGMENT_PRUNE_TO = Math.floor(FRAGMENT_MAX_BYTES * 0.75);
+const FRAGMENT_ENTRY_OVERHEAD = 240;
+const fragmentStore = new Map<string, { html: string; bytes: number }>();
+let fragmentBytes = 0;
+export function fragmentCacheStats() {
+  return { entries: fragmentStore.size, bytes: fragmentBytes };
+}
+export function fragmentCacheClear() {
+  fragmentStore.clear();
+  fragmentBytes = 0;
+}
+function fragmentKey(id: unknown, updatedAt: unknown): string {
+  return `views/messages/_message/messages/${id}-${updatedAt}/presentation-v3`;
+}
+export function readMessageFragment(id: unknown, updatedAt: unknown): string | undefined {
+  const entry = fragmentStore.get(fragmentKey(id, updatedAt));
+  if (!entry) return undefined;
+  // LRU touch: re-insert so eviction drops least-recently-used first.
+  fragmentStore.delete(fragmentKey(id, updatedAt));
+  fragmentStore.set(fragmentKey(id, updatedAt), entry);
+  return entry.html;
+}
+export function writeMessageFragment(id: unknown, updatedAt: unknown, html: string): void {
+  const key = fragmentKey(id, updatedAt);
+  const bytes = key.length + html.length + FRAGMENT_ENTRY_OVERHEAD;
+  if (bytes > FRAGMENT_MAX_BYTES / 4) return;
+  const old = fragmentStore.get(key);
+  if (old) fragmentBytes -= old.bytes;
+  else fragmentStore.delete(key);
+  fragmentStore.set(key, { html, bytes });
+  fragmentBytes += bytes;
+  while (fragmentBytes > FRAGMENT_MAX_BYTES && fragmentStore.size > 0) {
+    const oldest = fragmentStore.keys().next();
+    if (oldest.done) break;
+    const victim = fragmentStore.get(oldest.value);
+    fragmentStore.delete(oldest.value);
+    if (victim) fragmentBytes -= victim.bytes;
+  }
+}
 export function userData(user: Row | null | undefined) {
   if (!user) return { ID: 0, Role: 0, Name: "" };
   return {
@@ -241,6 +286,23 @@ function wrapperFor(name: string): { render: (ctx: unknown) => string } {
   const tpl = nunjucks.compile(`{% import "pages.html" as p %}{{ p.${key}(dot) }}`, env);
   wrapperCache.set(key, tpl);
   return tpl;
+}
+// Render one message's `_message` partial through the fragment cache.
+// On hit the cached HTML is byte-identical to a fresh render; on miss
+// the partial is rendered once and stored for later requests. Like Rust's
+// `cached_message`, the presenter only needs id + updated_at to look up.
+export function messageFragment(item: Record<string, unknown>): string {
+  const html = readMessageFragment(item.ID, item.UpdatedAt);
+  if (html !== undefined) return html;
+  const rendered = fragment("message", item);
+  writeMessageFragment(item.ID, item.UpdatedAt, rendered);
+  return rendered;
+}
+// Render a whole message list through the fragment cache and concatenate.
+// Passed as `MessagesHTML`, this lets the `messages` macro skip its
+// per-message Nunjucks loop entirely on full hits.
+export function messagesHtml(items: Record<string, unknown>[]): string {
+  return items.map(messageFragment).join("");
 }
 export function fragment(
   name: string,
