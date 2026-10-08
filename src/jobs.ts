@@ -46,6 +46,21 @@ export function enqueue(kind: string, data: unknown): number {
       .run(JSON.stringify({ kind, data }), Date.now() / 1000).lastInsertRowid,
   );
 }
+// Batch enqueue: one INSERT (one lock acquisition, one roundtrip)
+// for N jobs. notifyMessage fans out to every offline member per
+// post; separate INSERTs serialized 4 workers on the jobs file.
+export function enqueueMany(items: Array<{ kind: string; data: unknown }>): void {
+  if (!items.length) return;
+  const at = Date.now() / 1000;
+  const params: Array<string | number> = [];
+  for (const item of items)
+    params.push(JSON.stringify({ kind: item.kind, data: item.data }), at);
+  jobsDb()
+    .query(
+      `INSERT INTO jobs(payload,available_at) VALUES${items.map(() => "(?,?)").join(",")}`,
+    )
+    .run(...params);
+}
 export function claim(at = Date.now() / 1000) {
   const db = jobsDb();
   db.exec("BEGIN IMMEDIATE");

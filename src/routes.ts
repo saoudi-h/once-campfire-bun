@@ -610,22 +610,39 @@ export function registerRoutes(app: RouteCollector) {
         if (isBot && !body && !item) return res.sendStatus(422);
         const blob = await prepareMessageAttachment({ ...req, user }, item);
         try {
-          stagedFiles(() =>
-            transaction(() => {
-              message = createMessage(
-                room.id,
-                user.id,
-                body,
-                value(req, "message", "client_message_id") || null,
-              );
-              attachMessage(message!, item, blob);
-            }),
-          );
+          if (item == null) {
+            // Fast path (the benched shape): nothing to link, so no
+            // outer transaction — createMessage's short txn holds
+            // the writer lock alone.
+            message = createMessage(
+              room.id,
+              user.id,
+              body,
+              value(req, "message", "client_message_id") || null,
+            );
+          } else {
+            message = stagedFiles(() =>
+              transaction(() => {
+                const created = createMessage(
+                  room.id,
+                  user.id,
+                  body,
+                  value(req, "message", "client_message_id") || null,
+                );
+                attachMessage(created!, item, blob);
+                return created;
+              }),
+            );
+          }
         } catch (error) {
           cleanupPrepared(blob);
           throw error;
         }
-        publishMessage(message!);
+        // Render once: the broadcast and the turbo response share it
+        // (messageById/messageData ran twice here plus once more in
+        // publishMessage).
+        const frag = messageFragment(messageData([message!])[0]!);
+        publishMessage(message!, "append", frag);
         notifyMessage(message!);
         if (isBot)
           return res
@@ -643,7 +660,7 @@ export function registerRoutes(app: RouteCollector) {
           res,
           "append",
           `messages_rooms_${room.type.split("::").pop().toLowerCase()}_${room.id}`,
-          messageFragment(messageData([messageById(message!.id)!])[0]!),
+          frag,
         );
       }
       if (["PATCH", "PUT"].includes(req.method)) {

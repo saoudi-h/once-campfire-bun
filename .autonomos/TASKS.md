@@ -8,7 +8,7 @@
 ## 🚀 Active Sprint
 
 - [x] **[PERF-05]** Sidebar page-cache (same version-keyed pattern as room/search) `Priority: 🟠` `Complexity: M`
-- [ ] **[PERF-06]** Writer-lock ceiling: post p99 and cable p99 (slimmer txns or write model) `Priority: 🟠` `Complexity: L`
+- [x] **[PERF-06]** Writer-lock ceiling, part 1: batch enqueues, folded check, shared render (+8-29%, p99 56->38ms) `Priority: 🟠` `Complexity: L`
 
 ## ✅ Done
 
@@ -21,5 +21,6 @@
 ## 🔮 Backlog
 
 - [ ] **[PERF-07]** `/up` trivial-route overhead (Elysia routing cost) `Priority: ⚪` `Complexity: S`
+- [ ] **[PERF-10]** Single-writer IPC for mutations (Rust writer-thread model, cross-process) `Priority: 🔵` `Complexity: XL`
 - [ ] **[PERF-08]** Cable scaling validation at 500/1000 clients `Priority: 🔵` `Complexity: M`
 - [ ] **[PERF-09]** Interleaved multi-rep runs for publishable numbers `Priority: 🔵` `Complexity: S`
