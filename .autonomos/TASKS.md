@@ -7,9 +7,11 @@
 
 ## 🚀 Active Sprint
 
-- [x] **[PUBLISH-01]** Readability pass: prune stale comments, English-only texts `Priority: 🟠` `Complexity: M`
-- [x] **[PUBLISH-02]** README + benchmark docs in English `Priority: 🟠` `Complexity: M`
-- [x] **[PUBLISH-03]** Final exhaustive benchmark (all suites, 3 reps) + results tables `Priority: 🟠` `Complexity: M`
+- [x] **[AUDIT-01]** Sidebar parity: placeholders + like-for-like response, re-measure `Priority: 🔴` `Complexity: M`
+- [ ] **[AUDIT-02]** Clonable repo: pinned reference, virgin-clone verify, MIT license `Priority: 🔴` `Complexity: M`
+- [ ] **[AUDIT-03]** Proof hardening: report fixes, all-rep errors, sizes, mixed load `Priority: 🟠` `Complexity: M`
+- [ ] **[AUDIT-04]** README restructure + prudent wording, separate bench doc `Priority: 🟠` `Complexity: S`
+- [ ] **[AUDIT-05]** Progressive routes/storage split with bench guardrails `Priority: 🔵` `Complexity: L`
 
 ## ✅ Done
 

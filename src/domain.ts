@@ -26,6 +26,28 @@ export const roomForUser = (
     Number((user as Row | null | undefined)?.id ?? user),
     Number(id),
   );
+// Rails Users::SidebarsController#find_direct_placeholder_users:
+// active users not already in a direct room with the user (self
+// included), oldest first, capped at 20 minus the excluded count.
+export function placeholderUsers(id: string | number): Row[] {
+  const excluded = new Set<number>([Number(id)]);
+  for (const row of all(
+    `SELECT DISTINCT m2.user_id AS user_id FROM memberships m2
+     WHERE m2.room_id IN (
+       SELECT m.room_id FROM memberships m JOIN rooms r ON r.id=m.room_id
+       WHERE m.user_id=? AND r.type='Rooms::Direct')`,
+    Number(id),
+  ))
+    excluded.add(Number(row.user_id));
+  const slots = Math.max(20 - excluded.size, 0);
+  if (!slots) return [];
+  const marks = [...excluded].map(() => "?").join(",");
+  return all(
+    `SELECT * FROM users WHERE status=0 AND id NOT IN (${marks}) ORDER BY created_at LIMIT ?`,
+    ...[...excluded],
+    slots,
+  );
+}
 const presentation =
   "SELECT m.*,u.name AS creator_name,u.bio AS creator_bio,u.updated_at AS creator_updated_at,r.name AS room_name,r.type AS room_type FROM messages m JOIN users u ON u.id=m.creator_id JOIN rooms r ON r.id=m.room_id";
 export const messageById = (id: string | number) =>

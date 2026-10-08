@@ -23,7 +23,7 @@ the same treatment? Measured with the Rust port's own harness
 |---|---|---|---|
 | Room page | 23,962 | 18,268 | 1.31x |
 | Messages page | 20,961 | 20,132 | 1.04x |
-| Sidebar | 26,248 | 17,576 | 1.49x |
+| Sidebar | 19,575 | 16,963 | 1.15x |
 | Search | 19,131 | 16,698 | 1.15x |
 | Avatar | 106,816 | 137,370 | 0.78x |
 | Static CSS | 194,882 | 139,787 | 1.39x |

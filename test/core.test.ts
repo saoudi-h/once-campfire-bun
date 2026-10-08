@@ -552,3 +552,71 @@ test("Attachment-only bot JSON and notification text use the original filename",
     "contract-file.txt",
   );
 });
+test("sidebar placeholders suggest active users outside direct rooms", async () => {
+  const { placeholderUsers } = domain;
+  const { fragment, userData } = await import("../src/rendering.ts");
+  const stamp = (ms: number) =>
+    new Date(ms)
+      .toISOString()
+      .replace("T", " ")
+      .replace("Z", "")
+      .replace(/(\.\d{3})$/, "$1000");
+  // A direct room between admin and member excludes both (plus admin).
+  const direct = run(
+    "INSERT INTO rooms(name,type,creator_id,created_at,updated_at) VALUES(?,?,?,?,?)",
+    null,
+    "Rooms::Direct",
+    admin.id,
+    now(),
+    now(),
+  );
+  const directId = Number(direct.lastInsertRowid);
+  domain.grantMemberships({ id: directId, type: "Rooms::Direct" }, [
+    admin.id,
+    member.id,
+  ]);
+  const ids = () => placeholderUsers(admin.id).map((u) => u.id);
+  assert.ok(!ids().includes(admin.id), "self excluded");
+  assert.ok(!ids().includes(member.id), "direct partner excluded");
+  assert.ok(ids().includes(outsider.id), "stranger suggested");
+  // Deactivated users are never suggested.
+  run("UPDATE users SET status=1 WHERE id=?", outsider.id);
+  assert.ok(!ids().includes(outsider.id), "deactivated excluded");
+  run("UPDATE users SET status=0 WHERE id=?", outsider.id);
+  assert.ok(ids().includes(outsider.id), "reactivated suggested again");
+  // Oldest first (distinct timestamps), capped at 20 minus the
+  // excluded count: outsider plus the 17 oldest of 25 extras.
+  const base = Date.now();
+  const extra: number[] = [];
+  for (let i = 0; i < 25; i++) {
+    const t = stamp(base + i * 1000);
+    const u = run(
+      "INSERT INTO users(name,email_address,password_digest,role,status,created_at,updated_at) VALUES(?,?,?,?,0,?,?)",
+      "Extra" + i,
+      `extra${i}@example.test`,
+      "digest",
+      0,
+      t,
+      t,
+    );
+    extra.push(Number(u.lastInsertRowid));
+  }
+  const listed = placeholderUsers(admin.id);
+  assert.equal(listed.length, 18);
+  assert.deepEqual(
+    listed.map((u) => u.id),
+    [outsider.id, ...extra.slice(0, 17)],
+  );
+  // The sidebar fragment renders one start-ping form per suggestion.
+  const html = fragment("sidebar", {
+    User: userData(admin),
+    SidebarRooms: [],
+    Placeholders: listed.slice(0, 2).map(userData),
+    CanCreateRooms: true,
+  });
+  assert.equal((html.match(/\/rooms\/directs\?user_ids/g) || []).length, 2);
+  // Cleanup: leave no trace for the other tests.
+  run("DELETE FROM memberships WHERE room_id=?", directId);
+  run("DELETE FROM rooms WHERE id=?", directId);
+  for (const id of extra) run("DELETE FROM users WHERE id=?", id);
+});

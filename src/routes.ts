@@ -7,6 +7,7 @@ import {
   messageById,
   messagesByIds,
   messagesForRoom,
+  placeholderUsers,
   grantMemberships,
   createUser,
   hashPassword,
@@ -450,14 +451,12 @@ export function registerRoutes(app: RouteCollector) {
     res.redirect("/");
   });
   app.get(["/users/me/sidebar", "/users/:id/sidebar"], login, (req, res) => {
-    // Sidebar fast path: the fragment carries no per-session content
-    // (verified: no authenticity_token) and both routes render the
-    // current user's list, so the key needs only data versions: the
-    // room id set (creation/deletion), room + membership versions
-    // (renames, unread, involvement), direct members' versions
-    // (names/avatars in labels), and the account version (room
-    // creation rights). On a hit the JOIN, the per-room lookups,
-    // the render and the gzip are all skipped.
+    // Sidebar fast path: every input that can change the fragment is
+    // versioned (room id set, room/membership/member versions, account
+    // version, placeholder users). The fragment carries no per-session
+    // content, so it is shared across sessions; a plain GET (no
+    // Turbo-Frame) renders the full Rails-equivalent page instead.
+    const framed = (req.get("Turbo-Frame") || "") !== "";
     const memberRooms = all(
       "SELECT room_id FROM memberships WHERE user_id=?",
       req.user.id,
@@ -471,7 +470,9 @@ export function registerRoutes(app: RouteCollector) {
       req.user.id,
     );
     const sidebarAccount = get("SELECT updated_at FROM accounts LIMIT 1");
+    const placeholders = placeholderUsers(req.user.id);
     const sidebarKey = [
+      framed ? "frame" : "page",
       req.user.id,
       req.user.updated_at,
       [...memberRooms].sort((a, b) => a - b).join(","),
@@ -479,6 +480,7 @@ export function registerRoutes(app: RouteCollector) {
       versions?.memberships,
       memberVersions?.users,
       sidebarAccount?.updated_at,
+      placeholders.map((u) => `${u.id}-${u.updated_at}`).join(","),
     ].join("|");
     const cachedSidebar = readPage(sidebarKey);
     if (cachedSidebar !== undefined)
@@ -495,12 +497,12 @@ export function registerRoutes(app: RouteCollector) {
             ? 1
             : (a.name || "").localeCompare(b.name || ""),
     );
-    const sidebarHtml = render(req, "sidebar", {
+    const sidebarHtml = render(req, framed ? "sidebar" : "sidebar_page", {
       SidebarRooms: rooms.map((r) => ({
         ...roomData(r, req.user),
         Unread: !!r.unread_at,
       })),
-      Placeholders: [],
+      Placeholders: placeholders.map(userData),
     });
     writePage(sidebarKey, sidebarHtml);
     res.type("html").send(sidebarHtml);
