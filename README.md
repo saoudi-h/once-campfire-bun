@@ -1,82 +1,44 @@
 # once-campfire-bun
 
 A [Bun](https://bun.com) + [Elysia](https://elysiajs.com) port of
-[ONCE Campfire](https://github.com/basecamp/once-campfire) (reference
-checkout in `reference/`). It keeps the SQLite database, storage
-layout, and signed/encrypted cookies, so existing installs keep
-their data and sessions.
+[ONCE Campfire](https://github.com/basecamp/once-campfire). You keep
+your SQLite database, storage layout, and signed cookies when you
+switch. The Rails checkout lives in `reference/` as a pinned
+submodule (`659f957`).
 
-One Bun process replaces the Ruby/Node stack; `WEB_WORKERS>1` runs a
-master (jobs, cable fanout, writer supervision) plus HTTP workers
-sharing the port via `SO_REUSEPORT`, with a dedicated SQLite writer
-child for message posts.
+MIT. I drew the templates, asset build, and compat contracts from
+the public Rails app. Vendored frontend assets keep their own
+licenses.
 
-## Why this exists
+One Bun process replaces the Ruby/Node stack. Set `WEB_WORKERS>1`
+and you get a master (jobs, cable fanout, writer supervision) plus
+HTTP workers on one port through `SO_REUSEPORT`, with a dedicated
+SQLite writer child for message posts.
 
-Agent-built ports of Campfire were benchmarked per language, with
-Rust far ahead — but only the Rust port received a serious
-optimization loop. This port asks: how close can JavaScript get with
-the same treatment? Measured with the Rust port's own harness
-(`bench/run` + `loadgen`), interleaved reps, same seed, same CPUs:
+## Status
 
-| HTTP req/s, 16 clients (median of 3) | Bun | Rust | Bun adv. |
-|---|---|---|---|
-| Room page | 23,962 | 18,268 | 1.31x |
-| Messages page | 20,961 | 20,132 | 1.04x |
-| Sidebar | 19,575 | 16,963 | 1.15x |
-| Search | 19,131 | 16,698 | 1.15x |
-| Avatar | 106,816 | 137,370 | 0.78x |
-| Static CSS | 194,882 | 139,787 | 1.39x |
-| Health (`/up`) | 195,754 | 72,856 | 2.69x |
-| Post a message | 4,008 | 4,794 | 0.84x |
-
-Action Cable (frames/s delivered): 100 clients 157k vs 262k
-(0.60x), 500 clients 180k vs 256k (0.70x), 1000 clients 158k vs
-248k (0.63x). Upload 505KB JPEG to thumbnail: 49ms vs 39ms
-(0.79x); thumbnail GET alone 1.3ms vs 0.2ms. Writes trail on the
-cross-process SQLite writer lock; thumbnail serving hops through
-redirects. See `.autonomos/worklogs/` for the full story and
-`bin/bench-compare.sh` to reproduce.
+Run the same hot reads against the same seed on one machine and
+this port matches the agent-built Rust port or passes it. Rust
+leads on writes, Cable fan-out, avatar serving, and memory. Read
+`docs/BENCHMARKS.md` for method, numbers, and caveats.
 
 ## Develop
 
 ```bash
+git clone --recurse-submodules <this-repo>
 bun install
 bun bin/test.js   # one bun test process per file (DB isolation)
 bun run typecheck
 bun src/server.ts # dev server (HTTP_PORT, WEB_WORKERS, BIND)
 ```
 
-Production image: `docker build -t campfire-bun .` then run with
-`SECRET_KEY_BASE`, `VAPID_*` keys and a storage volume at
-`CAMPFIRE_STORAGE_PATH` (see `Dockerfile`).
+Build the production image with `docker build -t campfire-bun .`,
+then run it with `SECRET_KEY_BASE`, `VAPID_*` keys, and a storage
+volume at `CAMPFIRE_STORAGE_PATH` (see `Dockerfile`).
 
-## Benchmark
-
-Prerequisites: Docker, the sibling `once-campfire-rust` checkout
-(provides `bench/loadgen` and the seed), and pinned CPUs.
-
-```bash
-# One-time: build both production images
-docker build -t campfire-bun:bench .
-# (rust image) docker build -t campfire-rust:app <rust repo>
-
-# Interleaved compare: fresh seed per run, warmup, alternating order
-./bin/bench-compare.sh --reps 3 --suites http --concs "1 16" --out bench/results/<stamp>
-./bin/bench-compare.sh --reps 3 --rep-from 1 --suites cable --out bench/results/<stamp>
-python3 bin/bench-report.py bench/results/<stamp>
-
-# CPU/RAM scaling, 1 to 8 server threads (loadgen stays put)
-./bin/bench-scale.sh --out bench/results/scale-<stamp>
-```
-
-Compare ratios on the same host, never absolute numbers across
-hosts. Raw JSON lands in `bench/results/` (gitignored); headline
-tables are recorded in `.autonomos/worklogs/`.
-
-Tune memory on small servers with `CAMPFIRE_CACHE_MB`
-(per-cache `CAMPFIRE_<FRAGMENT|PAGE|GZIP|BODY>_CACHE_MB`);
-defaults (32MB each) are the benchmarked performance.
+Small servers: cap memory with `CAMPFIRE_CACHE_MB`
+(per-cache `CAMPFIRE_<FRAGMENT|PAGE|GZIP|BODY>_CACHE_MB`).
+32MB per cache is the default. I benchmarked with defaults.
 
 ## Layout
 
