@@ -447,6 +447,39 @@ export function registerRoutes(app: RouteCollector) {
     res.redirect("/");
   });
   app.get(["/users/me/sidebar", "/users/:id/sidebar"], login, (req, res) => {
+    // Sidebar fast path: the fragment carries no per-session content
+    // (verified: no authenticity_token) and both routes render the
+    // current user's list, so the key needs only data versions: the
+    // room id set (creation/deletion), room + membership versions
+    // (renames, unread, involvement), direct members' versions
+    // (names/avatars in labels), and the account version (room
+    // creation rights). On a hit the JOIN, the per-room lookups,
+    // the render and the gzip are all skipped.
+    const memberRooms = all(
+      "SELECT room_id FROM memberships WHERE user_id=?",
+      req.user.id,
+    ).map((r) => r.room_id);
+    const versions = get(
+      "SELECT MAX(r.updated_at) AS rooms, MAX(m.updated_at) AS memberships FROM memberships m JOIN rooms r ON r.id=m.room_id WHERE m.user_id=?",
+      req.user.id,
+    );
+    const memberVersions = get(
+      "SELECT MAX(u.updated_at) AS users FROM users u WHERE u.id IN (SELECT m2.user_id FROM memberships m2 WHERE m2.room_id IN (SELECT m.room_id FROM memberships m JOIN rooms r ON r.id=m.room_id WHERE m.user_id=? AND r.type='Rooms::Direct'))",
+      req.user.id,
+    );
+    const sidebarAccount = get("SELECT updated_at FROM accounts LIMIT 1");
+    const sidebarKey = [
+      req.user.id,
+      req.user.updated_at,
+      [...memberRooms].sort((a, b) => a - b).join(","),
+      versions?.rooms,
+      versions?.memberships,
+      memberVersions?.users,
+      sidebarAccount?.updated_at,
+    ].join("|");
+    const cachedSidebar = readPage(sidebarKey);
+    if (cachedSidebar !== undefined)
+      return res.type("html").send(cachedSidebar);
     const rooms = roomsForUser(req.user.id).filter(
       (r) => r.involvement !== "invisible",
     );
@@ -459,13 +492,15 @@ export function registerRoutes(app: RouteCollector) {
             ? 1
             : (a.name || "").localeCompare(b.name || ""),
     );
-    send(req, res, "sidebar", {
+    const sidebarHtml = render(req, "sidebar", {
       SidebarRooms: rooms.map((r) => ({
         ...roomData(r, req.user),
         Unread: !!r.unread_at,
       })),
       Placeholders: [],
     });
+    writePage(sidebarKey, sidebarHtml);
+    res.type("html").send(sidebarHtml);
   });
   app.all(
     [

@@ -7,7 +7,7 @@
 
 ## 🚀 Active Sprint
 
-- [ ] **[PERF-05]** Sidebar page-cache (same version-keyed pattern as room/search) `Priority: 🟠` `Complexity: M`
+- [x] **[PERF-05]** Sidebar page-cache (same version-keyed pattern as room/search) `Priority: 🟠` `Complexity: M`
 - [ ] **[PERF-06]** Writer-lock ceiling: post p99 and cable p99 (slimmer txns or write model) `Priority: 🟠` `Complexity: L`
 
 ## ✅ Done
