@@ -139,6 +139,33 @@ export function createApp() {
   elysia.ws("/cable", cableWs);
   startCablePing();
 
+  // --- /up health check: static bytes served natively, bypassing
+  // the compat pipeline (no cookie decrypt, session/user/account
+  // lookups, CSRF or DB for a health check). Mirrors the accepts()
+  // logic of the old compat route: JSON only when the client asks
+  // for application/json without text/html.
+  elysia.get("/up", ({ request }: any) => {
+    const accept = request.headers.get("accept") || "";
+    if (accept.includes("application/json") && !accept.includes("text/html"))
+      return new Response('{"status":"ok"}', {
+        status: 200,
+        headers: {
+          ...SEC_HEADERS,
+          "content-type": "application/json; charset=utf-8",
+        } as any,
+      });
+    return new Response(
+      '<!doctype html><html><body style="background-color: green"></body></html>',
+      {
+        status: 200,
+        headers: {
+          ...SEC_HEADERS,
+          "content-type": "text/html; charset=utf-8",
+        } as any,
+      },
+    );
+  });
+
   const ALL = ["GET", "POST", "PUT", "PATCH", "DELETE"];
   const seen = new Set<string>();
   for (const [origPath, entry] of routes) {

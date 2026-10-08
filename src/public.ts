@@ -72,15 +72,8 @@ function cache(req: CompatReq, res: CompatRes, etag: string) {
 export function registerPublic(
   add: (method: string, path: string, handler: (req: CompatReq, res: CompatRes) => any) => void,
 ) {
-  add("GET", "/up", (req, res) =>
-    req.accepts(["html", "json"]) === "json"
-      ? res.json({ status: "ok" })
-      : res
-          .type("html")
-          .send(
-            '<!doctype html><html><body style="background-color: green"></body></html>',
-          ),
-  );
+  // NOTE: /up is served natively in app.ts (no session/DB/compat
+  // overhead for the health check); see UP_HTML there.
   add("GET", "/users/:userId/avatar", async (req, res) => {
     try {
       const user = get(

@@ -20,7 +20,7 @@
 
 ## 🔮 Backlog
 
-- [ ] **[PERF-07]** `/up` trivial-route overhead (Elysia routing cost) `Priority: ⚪` `Complexity: S`
+- [x] **[PERF-07]** `/up` trivial-route overhead (Elysia routing cost) `Priority: ⚪` `Complexity: S`
 - [ ] **[PERF-10]** Single-writer IPC for mutations (Rust writer-thread model, cross-process) `Priority: 🔵` `Complexity: XL`
 - [x] **[PERF-08]** Cable scaling validation at 500/1000 clients `Priority: 🔵` `Complexity: M`
 - [ ] **[PERF-09]** Interleaved multi-rep runs for publishable numbers `Priority: 🔵` `Complexity: S`
