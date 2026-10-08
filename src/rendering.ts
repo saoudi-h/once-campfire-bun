@@ -447,7 +447,7 @@ export function render(
     Frame: !!req.get?.("Turbo-Frame"),
     Origin: `${req.protocol || "http"}://${req.get?.("host") || "localhost"}`,
     CSRF: req.csrfToken || "",
-    Version: "once-campfire-express",
+    Version: "once-campfire-bun",
     VAPIDPublicKey: process.env.VAPID_PUBLIC_KEY || "",
     CustomStyles: safe(
       account?.custom_styles ? `<style>${account.custom_styles}</style>` : "",
