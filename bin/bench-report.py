@@ -11,10 +11,23 @@ import statistics
 import sys
 
 out = sys.argv[1]
-runs: dict[str, list] = {}
+merged: dict[tuple, dict] = {}
 for f in sorted(glob.glob(os.path.join(out, "bun-*.json")) + glob.glob(os.path.join(out, "rust-*.json"))):
     r = json.load(open(f))
-    runs.setdefault(r["app"], []).append(r)
+    key = (r["app"], r["rep"])
+    m = merged.setdefault(key, {"app": r["app"], "rep": r["rep"], "http": [], "cable": []})
+    base = os.path.basename(f)
+    # Per-suite files (app-N-http.json) contribute their suite;
+    # legacy files (app-N.json) contribute whichever suite is present.
+    if (base.endswith("-http.json") or ("-http" not in base and "-cable" not in base)) and r.get("http"):
+        m["http"] = r["http"]
+    if (base.endswith("-cable.json") or ("-http" not in base and "-cable" not in base)) and r.get("cable"):
+        m["cable"] = r["cable"]
+runs: dict[str, list] = {}
+for m in merged.values():
+    runs.setdefault(m["app"], []).append(m)
+for a in runs:
+    runs[a].sort(key=lambda r: r["rep"])
 apps = [a for a in ("bun", "rust") if a in runs]
 
 

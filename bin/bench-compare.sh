@@ -118,7 +118,7 @@ cat "$OUT/env.txt" >&2
 
 ORDER=(${APPS//,/ })
 run_rep() {
-  local app=$1 rep=$2 f=$OUT/$app-$rep.json
+  local app=$1 rep=$2 f=$OUT/$app-$rep-${SUITES//,/-}.json
   log "$app rep $rep: starting"
   start_app "$app"
   local cookie scrape csrf streams css

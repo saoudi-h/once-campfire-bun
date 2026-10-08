@@ -7,8 +7,7 @@
 
 ## 🚀 Active Sprint
 
-- [x] **[PERF-05]** Sidebar page-cache (same version-keyed pattern as room/search) `Priority: 🟠` `Complexity: M`
-- [x] **[PERF-06]** Writer-lock ceiling, part 1: batch enqueues, folded check, shared render (+8-29%, p99 56->38ms) `Priority: 🟠` `Complexity: L`
+- [x] **[PERF-13]** Consolidation: full 3-rep compare on final code (writer IPC + avatar/assets) `Priority: 🟠` `Complexity: M`
 
 ## ✅ Done
 
@@ -17,6 +16,8 @@
 - [x] **[PERF-02]** SQLite composite index + off-thread WAL checkpoints + jobs durability (`50b6ac5`) `Priority: 🟠` `Complexity: M`
 - [x] **[PERF-03]** Slimmer write transactions: sanitize outside txn, skip no-op reconcile/FTS-DELETE, messagesByIds batch (`00db309`) `Priority: 🟠` `Complexity: S`
 - [x] **[PERF-04]** Cable indexed fanout with shared frames, no DB on broadcast (`038a30c`) `Priority: 🟠` `Complexity: M`
+- [x] **[PERF-05]** Sidebar page-cache `Priority: 🟠` `Complexity: M`
+- [x] **[PERF-06]** Writer-lock ceiling, part 1 (`4feeb69`) `Priority: 🟠` `Complexity: L`
 
 ## 🔮 Backlog
 
