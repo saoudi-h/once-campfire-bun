@@ -8,9 +8,8 @@
 ## 🚀 Active Sprint
 
 - [x] **[PUBLISH-01]** Readability pass: prune stale comments, English-only texts `Priority: 🟠` `Complexity: M`
-- [/] **[PUBLISH-02]** README + benchmark docs in English `Priority: 🟠` `Complexity: M`
-- [ ] **[PUBLISH-02]** README + benchmark docs in English `Priority: 🟠` `Complexity: M`
-- [ ] **[PUBLISH-03]** Final exhaustive benchmark (all suites, 3 reps) + results tables `Priority: 🟠` `Complexity: M`
+- [x] **[PUBLISH-02]** README + benchmark docs in English `Priority: 🟠` `Complexity: M`
+- [x] **[PUBLISH-03]** Final exhaustive benchmark (all suites, 3 reps) + results tables `Priority: 🟠` `Complexity: M`
 
 ## ✅ Done
 
@@ -33,4 +32,4 @@
 
 ## 🔮 Backlog
 
-*(Add future tasks here)*
+- [ ] **[PERF-16]** Thumbnail serving: direct file serve vs redirect chain (GET thumb 1.3ms vs 0.2ms) `Priority: ⚪` `Complexity: S`

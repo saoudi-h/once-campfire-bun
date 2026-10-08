@@ -15,14 +15,19 @@ merged: dict[tuple, dict] = {}
 for f in sorted(glob.glob(os.path.join(out, "bun-*.json")) + glob.glob(os.path.join(out, "rust-*.json"))):
     r = json.load(open(f))
     key = (r["app"], r["rep"])
-    m = merged.setdefault(key, {"app": r["app"], "rep": r["rep"], "http": [], "cable": []})
+    m = merged.setdefault(key, {"app": r["app"], "rep": r["rep"], "http": [], "cablelevels": {}, "upload": {}})
     base = os.path.basename(f)
-    # Per-suite files (app-N-http.json) contribute their suite;
-    # legacy files (app-N.json) contribute whichever suite is present.
-    if (base.endswith("-http.json") or ("-http" not in base and "-cable" not in base)) and r.get("http"):
+    legacy = "-http" not in base and "-cable" not in base and "-upload" not in base
+    # Per-suite files (app-N-http.json, app-N-cable-100.json) contribute
+    # their suite; legacy files (app-N.json) contribute whatever is set.
+    # Cable levels merge by client count so 100/500/1000 runs coexist.
+    if (base.endswith("-http.json") or legacy) and r.get("http"):
         m["http"] = r["http"]
-    if (base.endswith("-cable.json") or ("-http" not in base and "-cable" not in base)) and r.get("cable"):
-        m["cable"] = r["cable"]
+    if ("-cable" in base or legacy) and r.get("cable"):
+        for c in r["cable"]:
+            m["cablelevels"][c["clients"]] = c
+    if ("-upload" in base or legacy) and r.get("upload"):
+        m["upload"] = r["upload"]
 runs: dict[str, list] = {}
 for m in merged.values():
     runs.setdefault(m["app"], []).append(m)
@@ -103,12 +108,43 @@ for a in apps:
            if h["errors"] or any(int(k) >= 400 for k in h["statuses"])]
     print(f"- {a}: " + ("; ".join(bad) if bad else "none"))
 
-if first["cable"]:
+def cable_at(n, key):
+    def get(r):
+        c = r["cablelevels"].get(n)
+        if not c:
+            return None
+        try:
+            if key == "ready":
+                return c["ready"]
+            if key == "tput":
+                return c["throughput"]["delivered_msgs_per_sec"]
+            if key == "frames":
+                return c["throughput"]["frames_per_sec"]
+            return c["latency"]["all_clients"][key]
+        except (KeyError, IndexError, TypeError):
+            return None
+    return get
+
+
+levels = sorted({n for a in apps for r in runs[a] for n in r["cablelevels"]})
+if levels:
     header("Action Cable fan-out")
-    for i, c in enumerate(first["cable"]):
-        n = c["clients"]
-        row(f"{n} clients: subscribed", lambda r, i=i: r["cable"][i]["ready"], True)
-        row(f"{n} clients: paced post->all p50 ms", lambda r, i=i: r["cable"][i]["latency"]["all_clients"]["p50_ms"], False)
-        row(f"{n} clients: paced post->all p99 ms", lambda r, i=i: r["cable"][i]["latency"]["all_clients"]["p99_ms"], False)
-        row(f"{n} clients: msgs/s delivered to all", lambda r, i=i: r["cable"][i]["throughput"]["delivered_msgs_per_sec"], True)
-        row(f"{n} clients: frames/s", lambda r, i=i: r["cable"][i]["throughput"]["frames_per_sec"], True)
+    for n in levels:
+        row(f"{n} clients: subscribed", cable_at(n, "ready"), True)
+        row(f"{n} clients: paced post->all p50 ms", cable_at(n, "p50_ms"), False)
+        row(f"{n} clients: paced post->all p99 ms", cable_at(n, "p99_ms"), False)
+        row(f"{n} clients: msgs/s delivered to all", cable_at(n, "tput"), True)
+        row(f"{n} clients: frames/s", cable_at(n, "frames"), True)
+
+def _umed(key):
+    def get(r):
+        vals = sorted(x[key] for x in r["upload"].get("runs", []) if key in x and isinstance(x[key], (int, float)))
+        return vals[len(vals) // 2] if vals else None
+    return get
+
+
+if any(r.get("upload") for a in apps for r in runs[a]):
+    header("Upload + thumbnail (black_hole.jpg, 505 KB)")
+    row("POST with attachment median ms", _umed("post_ms"), False)
+    row("then GET thumb median ms", _umed("thumb_ms"), False)
+    row("POST -> thumbnail served median ms", lambda r: r["upload"].get("median_total_ms"), False)

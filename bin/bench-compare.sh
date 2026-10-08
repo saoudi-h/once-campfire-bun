@@ -4,8 +4,8 @@
 # pinned CPUs, host networking, warmup then measure, alternating order.
 #
 #   bin/bench-compare.sh [--apps bun,rust] [--reps 3] [--out DIR]
-#                        [--suites http,cable] [--concs "1 16"]
-#                        [--rep-from N] [--rep-to M]   (resume a range)
+#                        [--suites http,cable,upload] [--concs "1 16"]
+#                        [--cable-clients "100"] [--rep-from N] [--rep-to M]
 #   Env: RUST_ROOT (sibling checkout, default ../once-campfire-rust),
 #        BUN_IMAGE, RUST_IMAGE, SERVER_CPUS=8-11, LOADGEN_CPUS=12-15,
 #        HTTP_SECS=8, CABLE_CLIENTS="100", CABLE_TPUT_SECS=10, PORT=4390
@@ -22,6 +22,8 @@ CONCS=${CONCS:-1 16}
 CABLE_CLIENTS=${CABLE_CLIENTS:-100}
 CABLE_TPUT_SECS=${CABLE_TPUT_SECS:-10}
 CABLE_POSTERS=${CABLE_POSTERS:-4}
+UPLOAD_REPS=${UPLOAD_REPS:-5}
+UPLOAD_FILE=${UPLOAD_FILE:-$RUST_ROOT/reference/test/fixtures/files/black_hole.jpg}
 PORT=${PORT:-4390}
 SUITES=${SUITES:-http,cable}
 APPS=bun,rust REPS=3 OUT="" REP_FROM=1 REP_TO=""
@@ -32,6 +34,8 @@ while [ $# -gt 0 ]; do
     --out) OUT=$2; shift 2 ;;
     --suites) SUITES=$2; shift 2 ;;
     --concs) CONCS=$2; shift 2 ;;
+    --cable-clients) CABLE_CLIENTS=$2; shift 2 ;;
+    --upload-reps) UPLOAD_REPS=$2; shift 2 ;;
     --rep-from) REP_FROM=$2; shift 2 ;;
     --rep-to) REP_TO=$2; shift 2 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
@@ -118,7 +122,11 @@ cat "$OUT/env.txt" >&2
 
 ORDER=(${APPS//,/ })
 run_rep() {
-  local app=$1 rep=$2 f=$OUT/$app-$rep-${SUITES//,/-}.json
+  local app=$1 rep=$2 tag=${SUITES//,/-}
+  # Cable levels share the suite name: include the client count so
+  # 100/500/1000 runs don't overwrite each other.
+  if suite cable; then tag="$tag-${CABLE_CLIENTS// /-}"; fi
+  local f=$OUT/$app-$rep-$tag.json
   log "$app rep $rep: starting"
   start_app "$app"
   local cookie scrape csrf streams css
@@ -127,7 +135,7 @@ run_rep() {
   csrf=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["csrf"] or "")' "$scrape")
   streams=$(python3 -c 'import json,sys; print(",".join(json.loads(sys.argv[1])["streams"]))' "$scrape")
   css=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["css"])' "$scrape")
-  local http_json="[]" cable_json="[]"
+  local http_json="[]" cable_json="[]" upload_json='{}'
   if suite http; then
     local routes=(
       "room_show|/rooms/$ROOM"
@@ -162,10 +170,19 @@ run_rep() {
       log "$app rep $rep: cable $n clients $(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print("ready", r["ready"], "p50", r["latency"]["all_clients"].get("p50_ms"), "tput", r["throughput"]["delivered_msgs_per_sec"])' "$res")"
     done
   fi
-  python3 - "$f" "$app" "$rep" "$http_json" "$cable_json" <<'PY'
+  if suite upload; then
+    upload_json=$(lg upload --base "$BASE" --cookie "$cookie" --room "$WRITE_ROOM" --csrf "$csrf" \
+      --file "$UPLOAD_FILE" --reps "$UPLOAD_REPS")
+    log "$app rep $rep: upload median $(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("median_total_ms"))' "$upload_json")ms"
+  fi
+  python3 - "$f" "$app" "$rep" "$http_json" "$cable_json" "$upload_json" <<'PY'
 import json, sys
-f, app, rep, http, cable = sys.argv[1:]
-json.dump({"app": app, "rep": int(rep), "http": json.loads(http), "cable": json.loads(cable)}, open(f, "w"), indent=1)
+f, app, rep, http, cable, upload = sys.argv[1:]
+try:
+    up = json.loads(upload)
+except Exception:
+    up = {}
+json.dump({"app": app, "rep": int(rep), "http": json.loads(http), "cable": json.loads(cable), "upload": up}, open(f, "w"), indent=1)
 PY
   docker rm -f "$CONTAINER" >/dev/null
   log "$app rep $rep: done -> $f"

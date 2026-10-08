@@ -21,18 +21,21 @@ the same treatment? Measured with the Rust port's own harness
 
 | HTTP req/s, 16 clients (median of 3) | Bun | Rust | Bun adv. |
 |---|---|---|---|
-| Room page | 24,450 | 17,040 | 1.43x |
-| Messages page | 20,464 | 17,496 | 1.17x |
-| Sidebar | 26,564 | 17,389 | 1.53x |
-| Search | 16,461 | 14,611 | 1.13x |
-| Avatar | 104,306 | 123,600 | 0.84x |
-| Static CSS | 202,919 | 131,757 | 1.54x |
-| Health (`/up`) | 213,155 | 75,519 | 2.82x |
-| Post a message | 3,873 | 4,776 | 0.81x |
+| Room page | 23,962 | 18,268 | 1.31x |
+| Messages page | 20,961 | 20,132 | 1.04x |
+| Sidebar | 26,248 | 17,576 | 1.49x |
+| Search | 19,131 | 16,698 | 1.15x |
+| Avatar | 106,816 | 137,370 | 0.78x |
+| Static CSS | 194,882 | 139,787 | 1.39x |
+| Health (`/up`) | 195,754 | 72,856 | 2.69x |
+| Post a message | 4,008 | 4,794 | 0.84x |
 
-Action Cable (100 clients): 129k vs 244k frames/s (0.53x). Writes
-trail on the cross-process SQLite writer lock; reads lead. See
-`.autonomos/worklogs/` for the full story and
+Action Cable (frames/s delivered): 100 clients 157k vs 262k
+(0.60x), 500 clients 180k vs 256k (0.70x), 1000 clients 158k vs
+248k (0.63x). Upload 505KB JPEG to thumbnail: 49ms vs 39ms
+(0.79x); thumbnail GET alone 1.3ms vs 0.2ms. Writes trail on the
+cross-process SQLite writer lock; thumbnail serving hops through
+redirects. See `.autonomos/worklogs/` for the full story and
 `bin/bench-compare.sh` to reproduce.
 
 ## Develop
