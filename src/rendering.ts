@@ -68,16 +68,37 @@ let fragmentBytes = 0;
 // body with parse5 on every request, although the body only changes when
 // the message's updated_at changes. Memoize per message version.
 const bodyHtmlCache = new Map<string, { body: string; text: string; bytes: number }>();
+const BODY_HTML_MAX_BYTES = 32 * 1024 * 1024;
+let bodyHtmlBytes = 0;
 export function bodyCacheStats() {
-  return { entries: bodyHtmlCache.size };
+  return { entries: bodyHtmlCache.size, bytes: bodyHtmlBytes };
+}
+export function bodyCacheClear() {
+  bodyHtmlCache.clear();
+  bodyHtmlBytes = 0;
 }
 function bodyHtmlFor(id: unknown, updatedAt: unknown, raw: string): { body: string; text: string } {
   const key = `body/${id}-${updatedAt}`;
   const hit = bodyHtmlCache.get(key);
-  if (hit) return hit;
+  if (hit) {
+    // LRU touch like the fragment store.
+    bodyHtmlCache.delete(key);
+    bodyHtmlCache.set(key, hit);
+    return hit;
+  }
   const entry = { body: renderBody(raw), text: plainText(raw), bytes: 0 };
   entry.bytes = key.length + entry.body.length + entry.text.length + FRAGMENT_ENTRY_OVERHEAD;
-  bodyHtmlCache.set(key, entry);
+  if (entry.bytes < FRAGMENT_MAX_BYTES / 4) {
+    bodyHtmlCache.set(key, entry);
+    bodyHtmlBytes += entry.bytes;
+    while (bodyHtmlBytes > BODY_HTML_MAX_BYTES && bodyHtmlCache.size > 0) {
+      const oldest = bodyHtmlCache.keys().next();
+      if (oldest.done) break;
+      const victim = bodyHtmlCache.get(oldest.value);
+      bodyHtmlCache.delete(oldest.value);
+      if (victim) bodyHtmlBytes -= victim.bytes;
+    }
+  }
   return entry;
 }
 export function fragmentCacheStats() {
