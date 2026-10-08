@@ -60,7 +60,9 @@ function handleLine(socket: Bun.Socket, line: string) {
   }
 }
 
-if (import.meta.main) {
+// Writer role entry. Exported so a compiled binary can take the writer
+// role from server.ts (import.meta.main is false when imported).
+export function runWriterCli() {
   if (!process.env.CAMPFIRE_WRITER) {
     console.error("writer: CAMPFIRE_WRITER not set");
     process.exit(1);
@@ -97,3 +99,5 @@ if (import.meta.main) {
   process.on("SIGTERM", close);
   process.on("SIGINT", close);
 }
+
+if (import.meta.main) runWriterCli();

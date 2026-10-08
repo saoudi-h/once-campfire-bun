@@ -1,6 +1,7 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
+import { dataPath } from "./data.ts";
 
 // Row shape at the DB boundary: columns are `any` by design.
 export type Row = Record<string, any>;
@@ -44,7 +45,7 @@ export function initialize(
       .get()
   ) {
     connection.exec(
-      readFileSync(new URL("./schema.sql", import.meta.url), "utf8"),
+      readFileSync(dataPath("src", "schema.sql"), "utf8"),
     );
   }
   validateSchema(connection);

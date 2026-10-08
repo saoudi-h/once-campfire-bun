@@ -4,11 +4,10 @@ import { all, get, type Row } from "./db.ts";
 import * as rails from "./rails.ts";
 import { escape, plainText, renderBody } from "./richtext.ts";
 import { blobUrl, representationUrl } from "./storage.ts";
+import { dataPath } from "./data.ts";
 import type { CompatReq } from "./compat.ts";
 const env = new nunjucks.Environment(
-  new nunjucks.FileSystemLoader(
-    new URL("../templates/", import.meta.url).pathname,
-  ),
+  new nunjucks.FileSystemLoader(dataPath("templates")),
   { autoescape: true },
 );
 const safe = (value: string) => new nunjucks.runtime.SafeString(value || "");
@@ -28,8 +27,8 @@ const generatedCache = new Map<string, string>();
 function generated(name: string, fallback = "") {
   const cached = generatedCache.get(name);
   if (cached !== undefined) return cached;
-  const path = new URL(`../assets/generated/${name}`, import.meta.url);
-  const value = existsSync(path) ? readFileSync(path, "utf8") : fallback;
+  const file = dataPath("assets/generated", name);
+  const value = existsSync(file) ? readFileSync(file, "utf8") : fallback;
   generatedCache.set(name, value);
   return value;
 }
@@ -303,7 +302,7 @@ export function messageData(messages: Row[], origin = "") {
   });
 }
 const translations: Record<string, Array<[string, string]>> = JSON.parse(
-  readFileSync(new URL("./translations.json", import.meta.url), "utf8"),
+  readFileSync(dataPath("src", "translations.json"), "utf8"),
 );
 const reactions: Array<[string, string]> = [
   ["👍", "Thumbs up"],

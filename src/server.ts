@@ -4,6 +4,19 @@ import { startCheckpointer, stopCheckpointer } from "./checkpoint.ts";
 import { startFanoutServer, connectFanout, fanout } from "./fanout.ts";
 import { setFanout } from "./cable.ts";
 import { connectWriter } from "./write-client.ts";
+import { initialize } from "./db.ts";
+
+// A `bun build --compile` binary runs this module as its entry in every
+// child, so the writer role can no longer be selected by spawning a
+// separate script path (writer.ts as argv[1]). Dispatch it from env:
+// the master already sets CAMPFIRE_WRITER when it spawns the child.
+if (process.env.CAMPFIRE_WRITER === "1") {
+  const { runWriterCli } = await import("./writer.ts");
+  runWriterCli();
+  // The unix-socket listener keeps the event loop alive; suspend the
+  // entry here so none of the server logic below runs in the writer child.
+  await new Promise(() => {});
+}
 
 const port = Number(process.env.HTTP_PORT || 8080);
 const bind = process.env.BIND || "0.0.0.0";
@@ -21,6 +34,12 @@ if (workers > 1 && !isWorker) {
   // sharing the port via SO_REUSEPORT.
   let shuttingDown = false;
   await startWorker();
+  // Create the app schema here, before any child starts. Compiled
+  // children boot instantly and would otherwise race a first-boot
+  // schema.sql run (one child sees a half-created database and the
+  // supervisor restarts it). Interpreted children never won this race;
+  // pinning it in the master keeps first boot deterministic everywhere.
+  initialize();
   startCheckpointer();
   startFanoutServer();
   const children = new Set<Bun.Subprocess>();
