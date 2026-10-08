@@ -7,7 +7,8 @@
 
 ## 🚀 Active Sprint
 
-- [x] **[PERF-13]** Consolidation: full 3-rep compare on final code (writer IPC + avatar/assets) `Priority: 🟠` `Complexity: M`
+- [x] **[PERF-12]** Writer group-commit: tried, measured ~0, reverted (see worklog) `Priority: ⚪` `Complexity: M`
+- [ ] **[PERF-14]** Scaling study 1-16 CPUs + CPU/RAM at rest and load, Bun vs Rust `Priority: 🟠` `Complexity: M`
 
 ## ✅ Done
 
