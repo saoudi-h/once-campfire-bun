@@ -233,7 +233,7 @@ export function registerPublic(
   add: (method: string, path: string, handler: (req: CompatReq, res: CompatRes) => any) => void,
 ) {
   // NOTE: /up is served natively in app.ts (no session/DB/compat
-  // overhead for the health check); see UP_HTML there.
+  // overhead for the health check).
   // NOTE: user avatars are served natively in app.ts via
   // avatarPayload (no session/DB auth: the signed id is the
   // credential).

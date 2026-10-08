@@ -580,8 +580,7 @@ export function registerRoutes(app: RouteCollector) {
         if (message) return send(req, res, "show-message", { Messages: messageData(rows) });
         // The message-list fragment is viewer-independent (permalinks
         // only carry the host): share it across users keyed on the
-        // room version and the paging anchor. messageData ran twice
-        // here (3 bulk queries each); run it once.
+        // room version and the paging anchor.
         const fragKey = [
           origin(req),
           room.id,
@@ -652,9 +651,7 @@ export function registerRoutes(app: RouteCollector) {
           cleanupPrepared(blob);
           throw error;
         }
-        // Render once: the broadcast and the turbo response share it
-        // (messageById/messageData ran twice here plus once more in
-        // publishMessage).
+        // Render once: the broadcast and the turbo response share it.
         const frag = messageFragment(messageData([message!])[0]!);
         publishMessage(message!, "append", frag);
         notifyMessage(message!);

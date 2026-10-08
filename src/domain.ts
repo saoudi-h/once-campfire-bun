@@ -224,13 +224,7 @@ export function insertMessage(
     // embed rows yet: skip the parse and the queries entirely.
     if (hasEmbeds)
       reconcileEmbeds(Number(rich.lastInsertRowid), content, Number(userId));
-    const created = messageById(id);
-    // Post-commit effects run as short autocommit statements instead
-    // of inside the write transaction: one long RESERVED hold blocks
-    // every other worker's loop in busy-sleep, while short holds
-    // interleave. A crash in between leaves FTS/unread milliseconds
-    // stale (self-heals on the next write); the message row itself
-    // is atomic.
+    const created = messageById(id)!;
     indexNewMessage(id, content);
     run("UPDATE rooms SET updated_at=? WHERE id=?", time, Number(roomId));
     const cutoff = new Date(Date.now() - 60000)

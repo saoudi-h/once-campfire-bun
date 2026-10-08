@@ -1,12 +1,10 @@
 // Cross-process Action Cable fanout.
 //
-// The Express app relies on node:cluster: the primary rebroadcasts
-// `cable` events to every worker so WebSocket clients connected to
-// any worker receive messages published through any other worker.
-// Bun has no cluster module and BroadcastChannel does not cross
-// process boundaries, so the master mediates the same fanout over
-// a unix socket: workers connect as clients, the master echoes
-// every frame to all other workers.
+// Workers connect as clients over a unix socket; the master echoes
+// every frame to all other workers, so WebSocket clients on any
+// worker receive messages published through any other worker.
+// (Bun has no cluster module, and BroadcastChannel does not cross
+// process boundaries.)
 import { deliver } from "./cable.ts";
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";

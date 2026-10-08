@@ -281,10 +281,8 @@ export function createApp() {
       if (h.length >= 3) await (h as Middleware)(req, res, next);
       else await (h as Handler)(req, res, next);
     }
-    // Express semantics: run chain until a handler ends the response.
-    // Our facade has no "ended" flag; replicate Express by running the
-    // chain and treating first res.body assignment as terminal for
-    // middleware-style flows: run all, but guards short-circuit via return.
+    // Express runs the chain until a handler ends the response;
+    // handlers below either send or delegate via next().
     await next();
   }
 
@@ -292,8 +290,7 @@ export function createApp() {
     const headers: Record<string, string> = { ...SEC_HEADERS };
     for (const [k, v] of Object.entries(res.headers)) headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
     const cookies = sessionCookieHeaders(req, before);
-    // gzip: Bun.serve handles it natively when the client accepts it and
-    // the response opts in; do it manually for text payloads.
+    // Compress textual payloads for gzip clients (shared LRU cache).
     let body: any = (res as any).bunFile ?? res.body ?? "";
     const accept = request.headers.get("accept-encoding") || "";
     const ctype = headers["content-type"] || "";

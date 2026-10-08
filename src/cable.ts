@@ -210,8 +210,8 @@ export function dropUserConnections(userId: number) {
     dropClient(client);
   }
 }
-// Prune one user's room-scoped subscriptions (membership removed or
-// room deleted): rejects like a failed re-authorization used to.
+// Prune one user's room-scoped subscriptions after membership
+// removal: rejects like a re-authorization failure would.
 export function dropRoomUser(roomId: number, userId: number) {
   for (const client of clients) {
     if (client.user_id !== userId) continue;
@@ -234,8 +234,8 @@ export function dropRoom(roomId: number) {
     }
   }
 }
-// Fanout hook: single-process Bun delivers directly. Multi-worker fanout
-// is wired in server.ts via a shared BroadcastChannel/redis if enabled.
+// Fanout hook: delivers locally, then forwards to other workers
+// when setFanout wired it (server.ts, multi-worker mode).
 export let fanout: ((stream: string, message: unknown) => void) | null = null;
 export function setFanout(fn: ((stream: string, message: unknown) => void) | null) {
   fanout = fn;

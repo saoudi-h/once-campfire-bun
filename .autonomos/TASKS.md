@@ -7,7 +7,9 @@
 
 ## 🚀 Active Sprint
 
-- [x] **[PERF-15]** Cache/memory tuning knob for small servers, perf-neutral by default `Priority: 🔵` `Complexity: S`
+- [/] **[PUBLISH-01]** Readability pass: prune stale comments, English-only texts `Priority: 🟠` `Complexity: M`
+- [ ] **[PUBLISH-02]** README + benchmark docs in English `Priority: 🟠` `Complexity: M`
+- [ ] **[PUBLISH-03]** Final exhaustive benchmark (all suites, 3 reps) + results tables `Priority: 🟠` `Complexity: M`
 
 ## ✅ Done
 
@@ -18,6 +20,7 @@
 - [x] **[PERF-04]** Cable indexed fanout with shared frames, no DB on broadcast (`038a30c`) `Priority: 🟠` `Complexity: M`
 - [x] **[PERF-05]** Sidebar page-cache (`6b65919`) `Priority: 🟠` `Complexity: M`
 - [x] **[PERF-06]** Writer-lock ceiling, part 1 (`4feeb69`) `Priority: 🟠` `Complexity: L`
+- [x] **[PERF-15]** Cache/memory tuning knob, perf-neutral (`2957180`) `Priority: 🔵` `Complexity: S`
 - [x] **[PERF-07]** `/up` native route (`16a201c`) `Priority: ⚪` `Complexity: S`
 - [x] **[PERF-08]** Cable scaling validation at 500/1000 (`9953859` incl. bodyHtmlCache bound) `Priority: 🔵` `Complexity: M`
 - [x] **[PERF-09]** Interleaved compare harness + reports (`0b82593`) `Priority: 🔵` `Complexity: S`

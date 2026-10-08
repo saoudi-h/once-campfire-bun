@@ -70,7 +70,7 @@ export function versionTime(value: unknown) {
 // room page re-renders every message on each request although the HTML
 // of a message version never changes. Cache the rendered `_message`
 // partial keyed by message id + updated_at (Rails `cache_key_with_version`),
-// bounded at 32MB with LRU eviction like ActiveSupport::MemoryStore.
+// bounded LRU like ActiveSupport::MemoryStore (see cacheLimitMb).
 const FRAGMENT_MAX_BYTES = cacheLimitMb("CAMPFIRE_FRAGMENT_CACHE_MB", 32);
 const FRAGMENT_PRUNE_TO = Math.floor(FRAGMENT_MAX_BYTES * 0.75);
 const FRAGMENT_ENTRY_OVERHEAD = 240;
@@ -153,7 +153,7 @@ export function writeMessageFragment(id: unknown, updatedAt: unknown, html: stri
 // change, but render() re-runs nunjucks over ~500KB on every request.
 // Callers build a key from every input that can change the output
 // (room/user/account versions, host, paging anchor, per-session CSRF
-// token) and skip the render on a hit. Same 32MB LRU bound.
+// token) and skip the render on a hit. Bounded LRU (see cacheLimitMb).
 const PAGE_MAX_BYTES = cacheLimitMb("CAMPFIRE_PAGE_CACHE_MB", 32);
 const pageStore = new Map<string, { html: string; bytes: number }>();
 let pageBytes = 0;

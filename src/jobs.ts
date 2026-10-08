@@ -33,7 +33,6 @@ export function jobsDb(): Database {
   // Same durability as the main database (WAL + NORMAL, see db.ts):
   // queued pushes/webhooks are best-effort — a crash may lose the
   // last uncheckpointed jobs, like the Rust port's in-memory queues.
-  // enqueue() runs per notification otherwise each INSERT fsyncs.
   connection.exec(
     "PRAGMA busy_timeout=10000;PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;PRAGMA wal_autocheckpoint=0;CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY,payload TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,available_at REAL NOT NULL,lease_until REAL,lease_token TEXT,status TEXT NOT NULL DEFAULT 'ready',last_error TEXT)",
   );

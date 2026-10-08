@@ -2,8 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 
-// Fluid row shape at the DB boundary: callers treat columns as `any` for
-// now; Phase 1 follow-ups will narrow these to per-table interfaces.
+// Row shape at the DB boundary: columns are `any` by design.
 export type Row = Record<string, any>;
 export type RunResult = { changes: number | bigint | undefined; lastInsertRowid: number | bigint | undefined };
 

@@ -15,8 +15,7 @@ const workers =
 const isWorker = Boolean(process.env.CAMPFIRE_WORKER);
 
 if (workers > 1 && !isWorker) {
-  // Master process: mirrors the Express app's node:cluster
-  // primary. It runs the job queue, mediates Action Cable
+  // Master process: runs the job queue, mediates Action Cable
   // fanout between workers, and supervises the HTTP workers.
   // HTTP traffic is balanced by the kernel across workers
   // sharing the port via SO_REUSEPORT.

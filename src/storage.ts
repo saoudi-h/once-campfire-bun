@@ -257,7 +257,7 @@ export function serve(req: CompatReq, res: CompatRes, file: string, type: string
   }
   res.set("Content-Length", String(Math.max(0, end - start + 1)));
   if (req.method === "HEAD" || size === 0) return res.end();
-  // Bun path: stash a lazy file slice; app.ts materializes it into a 206 Response.
+  // Stash a lazy file slice; app.ts materializes it into a 206 Response.
   (res as any).bunFile = Bun.file(file).slice(start, end + 1);
   return res.end();
 }
