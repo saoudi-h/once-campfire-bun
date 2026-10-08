@@ -1,9 +1,10 @@
 # dependencies (bun install)
 node_modules
 
-# rails reference checkout: inputs for bin/build-assets.js and runtime asset
-# reads (same subtree the Express port vendors via its git submodule)
-reference/
+# Rails reference (git submodule, pinned SHA): inputs for
+# bin/build-assets.js and runtime asset reads. Clone with
+# --recurse-submodules (same subtree the Express port vendors).
+
 
 # asset build output (bin/build-assets.js)
 assets/generated/
