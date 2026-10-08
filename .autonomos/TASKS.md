@@ -12,7 +12,7 @@
 - [x] **[AUDIT-03]** Proof hardening: report fixes, all-rep errors, sizes, mixed load `Priority: 🟠` `Complexity: M`
 - [x] **[AUDIT-04]** README restructure + prudent wording, separate bench doc `Priority: 🟠` `Complexity: S`
 - [x] **[AUDIT-05]** Light touch-up only: obvious safe cleanups in routes/storage, no behavior change `Priority: ⚪` `Complexity: S`
-- [/] **[PERF-17]** Bun/Elysia perf pass: build settings, runtime flags, Bun 1.4.3-canary check `Priority: 🔵` `Complexity: M`
+- [x] **[PERF-17]** Bun/Elysia perf pass: build settings, runtime flags, Bun 1.4.3-canary check `Priority: 🔵` `Complexity: M`
 
 ## ✅ Done
 
