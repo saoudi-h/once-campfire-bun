@@ -7,7 +7,8 @@
 
 ## 🚀 Active Sprint
 
-- [/] **[PUBLISH-01]** Readability pass: prune stale comments, English-only texts `Priority: 🟠` `Complexity: M`
+- [x] **[PUBLISH-01]** Readability pass: prune stale comments, English-only texts `Priority: 🟠` `Complexity: M`
+- [/] **[PUBLISH-02]** README + benchmark docs in English `Priority: 🟠` `Complexity: M`
 - [ ] **[PUBLISH-02]** README + benchmark docs in English `Priority: 🟠` `Complexity: M`
 - [ ] **[PUBLISH-03]** Final exhaustive benchmark (all suites, 3 reps) + results tables `Priority: 🟠` `Complexity: M`
 
