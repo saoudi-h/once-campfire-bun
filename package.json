@@ -5,10 +5,12 @@
   "private": true,
   "scripts": {
     "test": "bun bin/test.js",
-    "typecheck": "bunx --package typescript tsc --noEmit -p ."
+    "typecheck": "bunx --package typescript tsc --noEmit -p .",
+    "autonomos": "autonomos"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@autonomos/cli": "^0.6.0"
   },
   "peerDependencies": {
     "typescript": "^7"
