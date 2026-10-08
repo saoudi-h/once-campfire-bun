@@ -23,6 +23,7 @@
 ## 🔮 Backlog
 
 - [ ] **[PERF-12]** Writer group-commit batching (amortize BEGIN/COMMIT+FTS over N posts) `Priority: ⚪` `Complexity: M`
+- [ ] **[PERF-15]** Cache/memory tuning knob for small servers (per-worker caps) `Priority: 🔵` `Complexity: S`
 - [x] **[PERF-11]** Avatar/static-asset serving gap (avatar x7 vs Rust front cache) `Priority: 🔵` `Complexity: M`
 - [x] **[PERF-08]** Cable scaling validation at 500/1000 clients `Priority: 🔵` `Complexity: M`
 - [x] **[PERF-09]** Interleaved multi-rep runs for publishable numbers `Priority: 🔵` `Complexity: S`
