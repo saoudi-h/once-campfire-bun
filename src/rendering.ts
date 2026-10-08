@@ -12,6 +12,18 @@ const env = new nunjucks.Environment(
   { autoescape: true },
 );
 const safe = (value: string) => new nunjucks.runtime.SafeString(value || "");
+// Cache size knob (PERF-15): per-cache CAMPFIRE_<NAME>_CACHE_MB,
+// fallback CAMPFIRE_CACHE_MB, default 32. Read once at import;
+// defaults preserve current behavior exactly.
+export function cacheLimitMb(envName: string, defMb: number): number {
+  const pick = (v: string | undefined) => {
+    const n = Number(v);
+    return v !== undefined && Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+  const mb =
+    pick(process.env[envName]) ?? pick(process.env.CAMPFIRE_CACHE_MB) ?? defMb;
+  return Math.floor(mb * 1024 * 1024);
+}
 const generatedCache = new Map<string, string>();
 function generated(name: string, fallback = "") {
   const cached = generatedCache.get(name);
@@ -59,7 +71,7 @@ export function versionTime(value: unknown) {
 // of a message version never changes. Cache the rendered `_message`
 // partial keyed by message id + updated_at (Rails `cache_key_with_version`),
 // bounded at 32MB with LRU eviction like ActiveSupport::MemoryStore.
-const FRAGMENT_MAX_BYTES = 32 * 1024 * 1024;
+const FRAGMENT_MAX_BYTES = cacheLimitMb("CAMPFIRE_FRAGMENT_CACHE_MB", 32);
 const FRAGMENT_PRUNE_TO = Math.floor(FRAGMENT_MAX_BYTES * 0.75);
 const FRAGMENT_ENTRY_OVERHEAD = 240;
 const fragmentStore = new Map<string, { html: string; bytes: number }>();
@@ -68,7 +80,7 @@ let fragmentBytes = 0;
 // body with parse5 on every request, although the body only changes when
 // the message's updated_at changes. Memoize per message version.
 const bodyHtmlCache = new Map<string, { body: string; text: string; bytes: number }>();
-const BODY_HTML_MAX_BYTES = 32 * 1024 * 1024;
+const BODY_HTML_MAX_BYTES = cacheLimitMb("CAMPFIRE_BODY_CACHE_MB", 32);
 let bodyHtmlBytes = 0;
 export function bodyCacheStats() {
   return { entries: bodyHtmlCache.size, bytes: bodyHtmlBytes };
@@ -142,7 +154,7 @@ export function writeMessageFragment(id: unknown, updatedAt: unknown, html: stri
 // Callers build a key from every input that can change the output
 // (room/user/account versions, host, paging anchor, per-session CSRF
 // token) and skip the render on a hit. Same 32MB LRU bound.
-const PAGE_MAX_BYTES = 32 * 1024 * 1024;
+const PAGE_MAX_BYTES = cacheLimitMb("CAMPFIRE_PAGE_CACHE_MB", 32);
 const pageStore = new Map<string, { html: string; bytes: number }>();
 let pageBytes = 0;
 export function pageCacheStats() {

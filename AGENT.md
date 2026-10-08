@@ -55,6 +55,11 @@ Rust; sidebar/post/cable remain (see `.autonomos/TASKS.md`).
   ADR-001) in multi-worker mode; single-process and tests use local
   writes. All other mutations write directly. Never add a second
   writer path without updating the ADR.
+- **Cache sizes:** fragment/page/gzip/body caches default 32MB each
+  (per worker); tune via `CAMPFIRE_<FRAGMENT|PAGE|GZIP|BODY>_CACHE_MB`
+  or `CAMPFIRE_CACHE_MB` for all. Smaller caps cut memory with no
+  loss on concentrated workloads but evict more on large working
+  sets — keep defaults for benchmarked performance.
 
 ## 📁 Key Directories
 

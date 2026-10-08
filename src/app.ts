@@ -16,6 +16,7 @@ import {
 } from "./routes.ts";
 import { registerStorage } from "./storage.ts";
 import { registerPublic, avatarPayload } from "./public.ts";
+import { cacheLimitMb } from "./rendering.ts";
 import { registerOpengraph } from "./opengraph.ts";
 import { allowLogin } from "./rate_limit.ts";
 import { cableWs, startCablePing } from "./cable.ts";
@@ -53,7 +54,7 @@ const gzipAsync = promisify(zlibGzip);
 // although the bytes never change. Bodies are keyed by the string
 // itself — a page-cache hit returns the same instance (O(1)), an
 // equal string still saves the deflate for one memcmp. Bounded LRU.
-const GZIP_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const GZIP_CACHE_MAX_BYTES = cacheLimitMb("CAMPFIRE_GZIP_CACHE_MB", 32);
 const gzipCache = new Map<string, Buffer>();
 let gzipCacheBytes = 0;
 function cachedGzip(body: string): Buffer | undefined {
