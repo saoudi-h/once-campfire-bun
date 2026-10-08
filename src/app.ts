@@ -15,7 +15,7 @@ import {
   type Middleware,
 } from "./routes.ts";
 import { registerStorage } from "./storage.ts";
-import { registerPublic } from "./public.ts";
+import { registerPublic, avatarPayload } from "./public.ts";
 import { registerOpengraph } from "./opengraph.ts";
 import { allowLogin } from "./rate_limit.ts";
 import { cableWs, startCablePing } from "./cable.ts";
@@ -166,6 +166,30 @@ export function createApp() {
     );
   });
 
+  // --- user avatars: static-ish bytes (signed id is the credential),
+  // no session/DB auth and no compat pipeline. Variant files are
+  // content-addressed on disk; the 304 path answers from the etag
+  // alone.
+  elysia.get("/users/:userId/avatar", async (ctx: any) => {
+    const result = await avatarPayload(
+      (ctx.params as any)?.userId,
+      (name: string) => ctx.request.headers.get(name) ?? undefined,
+      ctx.request.method,
+    );
+    const headers = { ...SEC_HEADERS, ...result.headers } as any;
+    if (result.file !== undefined)
+      return new Response(result.file as any, {
+        status: result.status,
+        headers,
+      });
+    if (result.body === undefined || result.body === "")
+      return new Response(null, { status: result.status, headers });
+    return new Response(result.body as any, {
+      status: result.status,
+      headers,
+    });
+  });
+
   const ALL = ["GET", "POST", "PUT", "PATCH", "DELETE"];
   const seen = new Set<string>();
   for (const [origPath, entry] of routes) {
@@ -314,6 +338,7 @@ export function createApp() {
   // --- static assets (mirror of app.js static mounts) ---
   const genDir = path.resolve("assets/generated/public");
   const assetsDir = path.resolve("assets/generated/public/assets");
+  const assetCache = new Map<string, Buffer>();
   async function staticFile(file: string, immutable: boolean): Promise<Response | null> {
     try {
       const st = fs.statSync(file);
@@ -326,7 +351,28 @@ export function createApp() {
   }
   elysia.get("/assets/*", async (ctx: any) => {
     const rel = String((ctx.params as any)["*"] || "").replace(/\.\./g, "");
-    return (await staticFile(path.join(assetsDir, rel), true)) ?? new Response("nf", { status: 404 });
+    // Immutable build assets (digested names) served from memory:
+    // read once, skip per-request stat+stream. Lazily filled so
+    // tests only pay for what they touch.
+    let data = assetCache.get(rel);
+    if (data === undefined) {
+      try {
+        const file = path.join(assetsDir, rel);
+        if (!fs.statSync(file).isFile())
+          return new Response("nf", { status: 404 });
+        data = fs.readFileSync(file);
+        assetCache.set(rel, data);
+      } catch {
+        return new Response("nf", { status: 404 });
+      }
+    }
+    return new Response(data as any, {
+      status: 200,
+      headers: {
+        ...SEC_HEADERS,
+        "cache-control": "public, max-age=31536000, immutable",
+      } as any,
+    });
   });
   elysia.get("/*", async (ctx: any) => {
     const pathname: string = new URL(ctx.request.url).pathname;

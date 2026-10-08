@@ -35,6 +35,7 @@ import {
 import { escape, plainText, messagePlainText } from "./richtext.ts";
 import * as rails from "./rails.ts";
 import { publish, dropUserConnections, dropRoomUser } from "./cable.ts";
+import { dropAvatarCache } from "./public.ts";
 import {
   storeUpload,
   attachSigned,
@@ -185,6 +186,7 @@ function cleanupPrepared(blob: Row | null | undefined) {
 async function replaceImage(upload: CompatFile | undefined, type: string, id: number, name: string) {
   await validateUpload(upload);
   const blob = replaceAttachment(upload as StoredUpload, type, id, name);
+  if (type === "User" && name === "avatar") dropAvatarCache(id);
   for (const removed of blob.removedBlobIds || [])
     enqueue("purge", { blob_id: removed });
   return blob;

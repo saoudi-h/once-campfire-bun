@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import QRCode from "qrcode";
 import { get } from "./db.ts";
 import * as rails from "./rails.ts";
+import { makeRes, type CompatReq, type CompatRes } from "./compat.ts";
 import {
   variant,
   pathFor,
@@ -11,7 +12,6 @@ import {
   removeAttachment,
   purgeBlob,
 } from "./storage.ts";
-import type { CompatReq, CompatRes } from "./compat.ts";
 
 const colors = [
   "#AF2E1B",
@@ -58,77 +58,190 @@ function attachment(type: string, id: number | string, name: string) {
     name,
   );
 }
-function cache(req: CompatReq, res: CompatRes, etag: string) {
-  res.set({
-    ETag: etag,
-    "Cache-Control": "public, max-age=1800, stale-while-revalidate=604800",
-  });
-  if (req.headers["if-none-match"] === etag) {
-    res.status(304).end();
-    return true;
+// Static avatar artwork (reference tree is immutable): read once,
+// not per request.
+let botAvatarSvg = "";
+let initialsTemplate = "";
+function staticAvatars() {
+  botAvatarSvg ||= fs.readFileSync(
+    "reference/app/assets/images/default-bot-avatar.svg",
+    "utf8",
+  );
+  initialsTemplate ||= fs.readFileSync(
+    "reference/app/views/users/avatars/show.svg.erb",
+    "utf8",
+  );
+  return { botAvatarSvg, initialsTemplate };
+}
+export interface AvatarResult {
+  status: number;
+  headers: Record<string, string>;
+  file?: unknown;
+  body?: unknown;
+}
+// Avatar response cache: the signed id is stable per user, so the
+// entry is keyed by user id and dropped when the avatar changes
+// (replaceImage, avatar DELETE). Blob responses are immutable bytes
+// served from memory; SVG initials depend on the mutable name and
+// stay dynamic.
+const avatarCache = new Map<number, { status: number; headers: Record<string, string>; data: Buffer }>();
+const AVATAR_CACHE_MAX = 512;
+export function dropAvatarCache(userId: number) {
+  avatarCache.delete(Number(userId));
+}
+function toAvatarResult(res: CompatRes): AvatarResult {
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(res.headers))
+    headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
+  return {
+    status: res.statusCode,
+    headers,
+    file: (res as any).bunFile,
+    body: res.body === undefined ? undefined : res.body,
+  };
+}
+// Native avatar resolver (no session/DB auth: the signed id is the
+// credential). Shared by the native Elysia route in app.ts; byte
+// behavior matches the old compat route.
+export async function avatarPayload(
+  signedId: string | undefined,
+  header: (name: string) => string | undefined,
+  method: string,
+): Promise<AvatarResult> {
+  try {
+    return await avatarPayloadInner(signedId, header, method);
+  } catch {
+    // Missing files, corrupt variants: 404 like the old route.
+    return { status: 404, headers: {} };
   }
-  return false;
+}
+async function avatarPayloadInner(
+  signedId: string | undefined,
+  header: (name: string) => string | undefined,
+  method: string,
+): Promise<AvatarResult> {
+  let userId: number;
+  try {
+    userId = Number(rails.verifyId("User", signedId, "avatar"));
+  } catch {
+    return { status: 404, headers: {} };
+  }
+  // Hot path: immutable bytes, no database at all. The entry is
+  // dropped when the avatar changes; ranges bypass the cache.
+  if (header("range") === undefined) {
+    const cached = avatarCache.get(userId);
+    if (cached) {
+      if (header("if-none-match") === cached.headers.etag)
+        return {
+          status: 304,
+          headers: {
+            etag: cached.headers.etag!,
+            "cache-control": cached.headers["cache-control"]!,
+          },
+        };
+      return {
+        status: cached.status,
+        headers: { ...cached.headers },
+        body: cached.data,
+      };
+    }
+  }
+  const user = get("SELECT * FROM users WHERE id=?", userId);
+  if (!user) return { status: 404, headers: {} };
+  const blob = attachment("User", user.id, "avatar");
+  const etag = `"${crypto
+    .createHash("sha256")
+    .update(JSON.stringify([user.id, user.name, user.updated_at, blob?.id]))
+    .digest("hex")}"`;
+  const baseHeaders: Record<string, string> = {
+    etag,
+    "cache-control": "public, max-age=1800, stale-while-revalidate=604800",
+  };
+  if (header("if-none-match") === etag)
+    return { status: 304, headers: baseHeaders };
+  if (blob) {
+    const out = await variant(blob, [512, 512], "webp");
+    const file = pathFor(out.key);
+    const res = makeRes();
+    res.set(baseHeaders);
+    serve(
+      { headers: { range: header("range") }, method } as unknown as CompatReq,
+      res,
+      file,
+      "image/webp",
+      out.filename,
+    );
+    const result = toAvatarResult(res);
+    // Cache full-file 200s (ranges stay dynamic): bounded, dropped
+    // on avatar change.
+    if (
+      result.status === 200 &&
+      typeof result.file === "object" &&
+      result.file !== null &&
+      header("range") === undefined
+    ) {
+      try {
+        const data = Buffer.from(
+          await (result.file as { arrayBuffer(): Promise<ArrayBuffer> }).arrayBuffer(),
+        );
+        if (avatarCache.size >= AVATAR_CACHE_MAX) {
+          const oldest = avatarCache.keys().next();
+          if (!oldest.done) avatarCache.delete(oldest.value);
+        }
+        avatarCache.set(Number(user.id), {
+          status: result.status,
+          headers: { ...result.headers },
+          data,
+        });
+        return { ...result, body: data, file: undefined };
+      } catch {
+        // Fall through with the file slice.
+      }
+    }
+    return result;
+  }
+  if (user.role === 2)
+    return {
+      status: 200,
+      headers: { ...baseHeaders, "content-type": "image/svg+xml" },
+      body: staticAvatars().botAvatarSvg,
+    };
+  const initials = Array.from(
+    user.name.matchAll(/(?:^|\s)(\S)/gu) as Iterable<RegExpMatchArray>,
+  )
+    .map((m) => m[1])
+    .join("");
+  const svg = staticAvatars()
+    .initialsTemplate.replace(
+      "<%= avatar_background_color(@user) %>",
+      colors[crc32(String(user.id)) % colors.length]!,
+    )
+    .replace("<%= @user.initials %>", escape(initials))
+    .replace(
+      /<%=raw .*? %>/g,
+      initials.length >= 3
+        ? 'textLength="85%" lengthAdjust="spacingAndGlyphs"'
+        : "",
+    );
+  return {
+    status: 200,
+    headers: { ...baseHeaders, "content-type": "image/svg+xml" },
+    body: svg,
+  };
 }
 export function registerPublic(
   add: (method: string, path: string, handler: (req: CompatReq, res: CompatRes) => any) => void,
 ) {
   // NOTE: /up is served natively in app.ts (no session/DB/compat
   // overhead for the health check); see UP_HTML there.
-  add("GET", "/users/:userId/avatar", async (req, res) => {
-    try {
-      const user = get(
-        "SELECT * FROM users WHERE id=?",
-        rails.verifyId("User", req.params.userId, "avatar"),
-      );
-      if (!user) return res.sendStatus(404);
-      const blob = attachment("User", user.id, "avatar");
-      const etag = `"${crypto
-        .createHash("sha256")
-        .update(JSON.stringify([user.id, user.name, user.updated_at, blob?.id]))
-        .digest("hex")}"`;
-      if (cache(req, res, etag)) return;
-      if (blob) {
-        const out = await variant(blob, [512, 512], "webp");
-        return serve(req, res, pathFor(out.key), "image/webp", out.filename);
-      }
-      if (user.role === 2)
-        return res
-          .type("image/svg+xml")
-          .send(
-            fs.readFileSync(
-              "reference/app/assets/images/default-bot-avatar.svg",
-            ),
-          );
-      const initials = Array.from(
-        user.name.matchAll(/(?:^|\s)(\S)/gu) as Iterable<RegExpMatchArray>,
-      )
-        .map((m) => m[1])
-        .join("");
-      let svg = fs.readFileSync(
-        "reference/app/views/users/avatars/show.svg.erb",
-        "utf8",
-      );
-      svg = svg
-        .replace(
-          "<%= avatar_background_color(@user) %>",
-          colors[crc32(String(user.id)) % colors.length]!,
-        )
-        .replace("<%= @user.initials %>", escape(initials))
-        .replace(
-          /<%=raw .*? %>/g,
-          initials.length >= 3
-            ? 'textLength="85%" lengthAdjust="spacingAndGlyphs"'
-            : "",
-        );
-      res.type("image/svg+xml").send(svg);
-    } catch {
-      res.sendStatus(404);
-    }
-  });
+  // NOTE: user avatars are served natively in app.ts via
+  // avatarPayload (no session/DB auth: the signed id is the
+  // credential).
   add("DELETE", "/users/me/avatar", (req, res) => {
     if (!req.user) return res.sendStatus(401);
     for (const id of removeAttachment("User", req.user.id, "avatar"))
       purgeBlob(id);
+    dropAvatarCache(req.user.id);
     res.redirect("/users/me/profile");
   });
   add("GET", "/account/logo", async (req, res) => {
