@@ -7,6 +7,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { CompatReq, CompatRes } from "./compat.ts";
 import type { Row } from "./db.ts";
 import sharp from "sharp";
+import { transformImage, imageMetadata } from "./image.ts";
 import { all, get, run, transaction, now } from "./db.ts";
 import * as rails from "./rails.ts";
 
@@ -310,13 +311,15 @@ export async function variant(blob: Row, dimensions: number[] = [1200, 800], for
     digest,
   );
   if (existing && fs.existsSync(pathFor(existing.key))) return existing;
-  const raw = await sharp(pathFor(blob.key), { limitInputPixels: 100_000_000 })
-    .rotate()
-    .resize(dimensions[0], dimensions[1], { fit: "inside", withoutEnlargement: true })
-    .sharpen()
-    .toFormat(format as "png" | "jpeg" | "webp" | "gif" | "tiff" | "avif")
-    .toBuffer();
-  const metadata = await sharp(raw).metadata();
+  const width = dimensions[0] as number;
+  const height = dimensions[1] as number;
+  const raw = await transformImage(pathFor(blob.key), {
+    width,
+    height,
+    format,
+    sharpen: true,
+  });
+  const metadata = await imageMetadata(raw);
   return stagedFiles(() =>
     transaction(() => {
       const winner = get(
@@ -375,7 +378,7 @@ export async function analyze(blob: Row): Promise<Record<string, unknown>> {
       blob.content_type || "",
     )
   ) {
-    const image = await sharp(pathFor(blob.key)).metadata();
+    const image = await imageMetadata(pathFor(blob.key));
     metadata = { ...metadata, width: image.width, height: image.height };
   } else if (/^(audio|video)\//.test(blob.content_type || "")) {
     const { stdout } = await execute(
@@ -454,7 +457,11 @@ export async function preview(blob: Row): Promise<Row | null> {
         ],
         { timeout: 60000, maxBuffer: 1024 * 1024 },
       );
-      await sharp(path.join(temp, "preview.png")).webp().toFile(out);
+      const webp = await Bun.file(path.join(temp, "preview.png"))
+        .image()
+        .webp()
+        .buffer();
+      await Bun.write(out, webp);
     } else return null;
     return storeUpload(
       {

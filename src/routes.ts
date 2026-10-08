@@ -1191,7 +1191,7 @@ function registerUsers(app: RouteCollector) {
   });
 }
 import nunjucks from "nunjucks";
-import sharp from "sharp";
+import { imageMetadata } from "./image.ts";
 async function validateUpload(upload?: CompatFile | Row | null) {
   if (
     upload &&
@@ -1199,7 +1199,7 @@ async function validateUpload(upload?: CompatFile | Row | null) {
     upload.mimetype !== "image/svg+xml"
   )
     try {
-      await sharp(upload.buffer!).metadata();
+      await imageMetadata(upload.buffer!);
     } catch (error) {
       throw Object.assign(error as Error, { status: 422 });
     }

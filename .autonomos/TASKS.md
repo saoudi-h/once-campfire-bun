@@ -13,6 +13,7 @@
 - [x] **[AUDIT-04]** README restructure + prudent wording, separate bench doc `Priority: 🟠` `Complexity: S`
 - [x] **[AUDIT-05]** Light touch-up only: obvious safe cleanups in routes/storage, no behavior change `Priority: ⚪` `Complexity: S`
 - [x] **[PERF-17]** Bun/Elysia perf pass: build settings, runtime flags, Bun 1.4.3-canary check `Priority: 🔵` `Complexity: M`
+- [x] **[PERF-18]** Bun.Image for hot thumbnail path (jpeg/png), lazy sharp fallback `Priority: 🟠` `Complexity: M`
 
 ## ✅ Done
 
