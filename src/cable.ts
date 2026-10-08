@@ -133,25 +133,104 @@ function frame(client: CableClient, value: unknown) {
   }
   try { client.ws.send(JSON.stringify(value)); } catch {}
 }
+// Pre-encoded frame for one wire payload.
+function sendRaw(client: CableClient, payload: string) {
+  if (!isOpen(client.ws)) return;
+  if (bufferedAmount(client.ws) > 1024 * 1024) {
+    try { client.ws.close(1013, "slow consumer"); } catch {}
+    return;
+  }
+  try { client.ws.send(payload); } catch {}
+}
+// Stream index: stream -> client -> its identifiers on that stream.
+// Authorization (alive + authorize) runs once at subscribe time and
+// when access is revoked (ban/deactivate/room removal close or prune
+// the affected subscriptions), so broadcast never touches the
+// database: it encodes one frame per distinct identifier and shares
+// it across every subscriber (Rust shared-frames port).
+const streamSubs = new Map<string, Map<CableClient, Set<string>>>();
+function indexAdd(client: CableClient, identifier: string, stream: string) {
+  let byClient = streamSubs.get(stream);
+  if (!byClient) {
+    byClient = new Map();
+    streamSubs.set(stream, byClient);
+  }
+  let identifiers = byClient.get(client);
+  if (!identifiers) {
+    identifiers = new Set();
+    byClient.set(client, identifiers);
+  }
+  identifiers.add(identifier);
+}
+function indexDelete(client: CableClient, identifier: string, stream: string) {
+  const byClient = streamSubs.get(stream);
+  if (!byClient) return;
+  const identifiers = byClient.get(client);
+  if (!identifiers) return;
+  identifiers.delete(identifier);
+  if (identifiers.size === 0) byClient.delete(client);
+  if (byClient.size === 0) streamSubs.delete(stream);
+}
 export function deliver(stream: string, message: unknown) {
-  for (const client of clients) {
-    if (!alive(client)) {
-      frame(client, {
-        type: "disconnect",
-        reason: "unauthorized",
-        reconnect: false,
-      });
-      closeSocket(client.ws, 1008);
-      continue;
-    }
-    for (const [identifier, sub] of client.subscriptions) {
-      if (sub.stream !== stream) continue;
-      if (!authorize(client, identifier)) {
-        client.subscriptions.delete(identifier);
-        frame(client, { type: "reject_subscription", identifier });
-        continue;
+  const byClient = streamSubs.get(stream);
+  if (byClient !== undefined) {
+    // Group targets by identifier: viewers of one room subscribe
+    // with the same identifier string, so one encode serves all.
+    const byIdentifier = new Map<string, CableClient[]>();
+    for (const [client, identifiers] of byClient) {
+      if (!isOpen(client.ws)) continue;
+      // The subscription still exists (pruned on unsubscribe/drop).
+      for (const identifier of identifiers) {
+        if (!client.subscriptions.has(identifier)) continue;
+        let targets = byIdentifier.get(identifier);
+        if (!targets) {
+          targets = [];
+          byIdentifier.set(identifier, targets);
+        }
+        targets.push(client);
       }
-      frame(client, { identifier, message });
+    }
+    for (const [identifier, targets] of byIdentifier) {
+      const payload = JSON.stringify({ identifier, message });
+      for (const client of targets) sendRaw(client, payload);
+    }
+  }
+}
+// Close every connection of a user (ban/deactivate): Rust closes
+// connections after commit instead of filtering per broadcast.
+export function dropUserConnections(userId: number) {
+  for (const client of [...clients]) {
+    if (client.user_id !== userId) continue;
+    frame(client, {
+      type: "disconnect",
+      reason: "unauthorized",
+      reconnect: false,
+    });
+    closeSocket(client.ws, 1008);
+    dropClient(client);
+  }
+}
+// Prune one user's room-scoped subscriptions (membership removed or
+// room deleted): rejects like a failed re-authorization used to.
+export function dropRoomUser(roomId: number, userId: number) {
+  for (const client of clients) {
+    if (client.user_id !== userId) continue;
+    for (const [identifier, sub] of [...client.subscriptions]) {
+      if (sub.room !== roomId) continue;
+      client.subscriptions.delete(identifier);
+      indexDelete(client, identifier, sub.stream);
+      frame(client, { type: "reject_subscription", identifier });
+    }
+  }
+}
+// Prune every subscription scoped to a room (room deleted).
+export function dropRoom(roomId: number) {
+  for (const client of clients) {
+    for (const [identifier, sub] of [...client.subscriptions]) {
+      if (sub.room !== roomId) continue;
+      client.subscriptions.delete(identifier);
+      indexDelete(client, identifier, sub.stream);
+      frame(client, { type: "reject_subscription", identifier });
     }
   }
 }
@@ -207,9 +286,12 @@ function presence(user: number, room: number, action: string) {
 function dropClient(client: CableClient) {
   clients.delete(client);
   try {
-    for (const sub of client.subscriptions.values())
+    for (const [identifier, sub] of client.subscriptions) {
+      indexDelete(client, identifier, sub.stream);
       if (sub.channel === "PresenceChannel" && sub.present)
         presence(client.user_id, sub.room, "absent");
+    }
+    client.subscriptions.clear();
   } catch {}
 }
 
@@ -240,15 +322,19 @@ function handleSocketMessage(client: CableClient, raw: any, isBinary: boolean) {
         if (!existing) presence(client.user_id, sub.room, "present");
       }
       client.subscriptions.set(identifier, sub);
+      indexAdd(client, identifier, sub.stream);
       frame(client, { type: "confirm_subscription", identifier });
     } else if (msg.command === "unsubscribe") {
       const sub = client.subscriptions.get(identifier);
       if (sub?.channel === "PresenceChannel" && sub.present)
         presence(client.user_id, sub.room, "absent");
+      if (sub) indexDelete(client, identifier, sub.stream);
       client.subscriptions.delete(identifier);
     } else if (msg.command === "message" && client.subscriptions.has(identifier)) {
-      const sub = authorize(client, identifier);
-      if (!sub) return;
+      // Authorization was established at subscribe time and pruned
+      // on revocation; the stored subscription is authoritative (no
+      // database on the client-message path).
+      const sub = client.subscriptions.get(identifier)!;
       const body = JSON.parse(msg.data);
       if (sub.channel === "PresenceChannel") {
         // The enclosing branch already checked has(identifier).
@@ -331,17 +417,21 @@ export const cableWs: any = {
 };
 
 let pingTimer: ReturnType<typeof setInterval> | null = null;
+// One liveness sweep: drops connections whose session died, pings
+// the rest. Runs every 3s in production (startCablePing); exported
+// so tests can trigger it deterministically.
+export function sweepCable() {
+  for (const client of [...clients]) {
+    if (!alive(client)) {
+      frame(client, { type: "disconnect", reason: "unauthorized", reconnect: false });
+      closeSocket(client.ws, 1008);
+      dropClient(client);
+    } else frame(client, { type: "ping", message: Math.floor(Date.now() / 1000) });
+  }
+}
 export function startCablePing() {
   if (pingTimer) return;
-  pingTimer = setInterval(() => {
-    for (const client of [...clients]) {
-      if (!alive(client)) {
-        frame(client, { type: "disconnect", reason: "unauthorized", reconnect: false });
-        closeSocket(client.ws, 1008);
-        dropClient(client);
-      } else frame(client, { type: "ping", message: Math.floor(Date.now() / 1000) });
-    }
-  }, 3000);
+  pingTimer = setInterval(sweepCable, 3000);
   (pingTimer as any).unref?.();
 }
 export function stopCablePing() {

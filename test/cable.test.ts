@@ -2,7 +2,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { initialize, run, get, now } from "../src/db.ts";
-import { cableWs, publish } from "../src/cable.ts";
+import { cableWs, publish, dropRoomUser, sweepCable } from "../src/cable.ts";
 import { signCookie, signStream, stream } from "../src/rails.ts";
 let app: any, base: string, storage: string;
 const room = { id: 1, type: "Rooms::Open" };
@@ -75,8 +75,8 @@ async function connect(): Promise<{ ws: WebSocket; frames: Frame[] }> {
 function closePromise(ws: WebSocket): Promise<unknown> {
   return new Promise((resolve) => ws.addEventListener("close", resolve, { once: true }));
 }
-async function wait(predicate: () => boolean) {
-  const end = Date.now() + 1500;
+async function wait(predicate: () => boolean, timeoutMs = 1500) {
+  const end = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() > end) throw new Error("socket timeout");
     await new Promise((r) => setTimeout(r, 5));
@@ -110,7 +110,11 @@ test("Action Cable rejects forged signed streams and revoked membership", async 
   const identifier = id();
   ws.send(JSON.stringify({ command: "subscribe", identifier }));
   await wait(() => frames.some((f) => f.type === "confirm_subscription"));
+  // Revocation goes through the app layer (like room member removal):
+  // the subscription is pruned at revoke time, broadcasts stay free
+  // of database checks.
   run("DELETE FROM memberships WHERE room_id=1 AND user_id=1");
+  dropRoomUser(1, 1);
   publish(stream(room), "private-after-revoke");
   await wait(() =>
     frames.some(
@@ -169,13 +173,18 @@ test("Presence refresh supports simultaneous tabs and uses room_id reads", async
         .connections === 0,
   );
 });
-test("Logout immediately prevents further delivery to an existing socket", async () => {
+test("Logout prevents further delivery to an existing socket", async () => {
   const { ws, frames } = await connect();
   ws.send(JSON.stringify({ command: "subscribe", identifier: id() }));
   await wait(() => frames.some((f) => f.type === "confirm_subscription"));
   run("DELETE FROM sessions WHERE id=1");
+  // Dead sessions are reaped by the periodic ping sweep (broadcasts
+  // no longer check the database per message): trigger one sweep.
+  sweepCable();
   const closed = closePromise(ws);
-  publish(stream(room), "after-logout");
+  await wait(
+    () => frames.some((f) => f.type === "disconnect" && f.reconnect === false),
+  );
   await closed;
   assert(!frames.some((f) => f.message === "after-logout"));
   assert(frames.some((f) => f.type === "disconnect" && f.reconnect === false));
