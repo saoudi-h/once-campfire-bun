@@ -5,6 +5,7 @@ import {
   roomsForUser,
   userById,
   messageById,
+  messagesByIds,
   messagesForRoom,
   grantMemberships,
   createUser,
@@ -23,6 +24,8 @@ import {
   messageData,
   messageFragment,
   messagesHtml,
+  readPage,
+  writePage,
   roomData,
   userData,
   avatar,
@@ -31,7 +34,7 @@ import {
 } from "./rendering.ts";
 import { escape, plainText, messagePlainText } from "./richtext.ts";
 import * as rails from "./rails.ts";
-import { publish } from "./cable.ts";
+import { publish, dropUserConnections, dropRoomUser } from "./cable.ts";
 import {
   storeUpload,
   attachSigned,
@@ -388,15 +391,43 @@ export function registerRoutes(app: RouteCollector) {
       req.lastRoom = room.id;
       req.session.last_room_id = room.id;
       const membership = get(
-        "SELECT involvement FROM memberships WHERE room_id=? AND user_id=?",
+        "SELECT involvement,updated_at FROM memberships WHERE room_id=? AND user_id=?",
         room.id,
         req.user.id,
       );
+      // Whole-page fast path: every input that can change the room
+      // page is versioned here (room/user/account rows, account logo
+      // presence, host, paging anchor, Turbo-Frame, per-session CSRF
+      // secret). The sidebar loads lazily via its own request, so it
+      // is not part of this page. On a hit every query below and the
+      // nunjucks render are skipped.
+      // NOTE: key on the stable session secret, not req.csrfToken:
+      // maskCsrf re-pads randomly per request (all masks stay valid).
+      const account = get("SELECT id,updated_at FROM accounts LIMIT 1");
+      const key = [
+        origin(req),
+        room.id,
+        room.updated_at,
+        req.params.messageId || "",
+        req.user.id,
+        req.user.updated_at,
+        membership?.updated_at,
+        membership?.involvement,
+        account?.updated_at,
+        get(
+          "SELECT id FROM active_storage_attachments WHERE record_type='Account' AND record_id=? AND name='logo'",
+          account?.id,
+        ) ? 1 : 0,
+        String(req.session._csrf_token || ""),
+        req.get("Turbo-Frame") || "",
+      ].join("|");
+      const cached = readPage(key);
+      if (cached !== undefined) return res.type("html").send(cached);
       const roomMessages = messageData(
         messagesForRoom(room.id, { around: req.params.messageId }),
         origin(req),
       );
-      send(req, res, "room", {
+      const html = render(req, "room", {
         Room: roomData(room, req.user),
         Messages: roomMessages,
         MessagesHTML: messagesHtml(roomMessages),
@@ -405,6 +436,8 @@ export function registerRoutes(app: RouteCollector) {
         Involvement: membership!.involvement,
         Invitation: false,
       });
+      writePage(key, html);
+      res.type("html").send(html);
     },
   );
   app.delete("/rooms/:roomId", login, (req, res) => {
@@ -507,14 +540,27 @@ export function registerRoutes(app: RouteCollector) {
           );
         }
         if (message) return send(req, res, "show-message", { Messages: messageData(rows) });
-        return res
-          .type("html")
-          .send(
-            fragment("messages", {
-              Messages: messageData(rows),
-              MessagesHTML: messagesHtml(messageData(rows)),
-            }),
-          );
+        // The message-list fragment is viewer-independent (permalinks
+        // only carry the host): share it across users keyed on the
+        // room version and the paging anchor. messageData ran twice
+        // here (3 bulk queries each); run it once.
+        const fragKey = [
+          origin(req),
+          room.id,
+          room.updated_at,
+          String(req.query.before ?? ""),
+          String(req.query.after ?? ""),
+        ].join("|");
+        const cachedFragment = readPage(fragKey);
+        if (cachedFragment !== undefined)
+          return res.type("html").send(cachedFragment);
+        const listMessages = messageData(rows, origin(req));
+        const listHtml = fragment("messages", {
+          Messages: listMessages,
+          MessagesHTML: messagesHtml(listMessages),
+        });
+        writePage(fragKey, listHtml);
+        return res.type("html").send(listHtml);
       }
       if (message && !can(user, message)) return res.sendStatus(403);
       const item = attachment(req),
@@ -789,12 +835,14 @@ function registerRoomForms(app: RouteCollector) {
           room!.id,
         );
         for (const m of current)
-          if (!ids.includes(m.user_id))
+          if (!ids.includes(m.user_id)) {
             run(
               "DELETE FROM memberships WHERE room_id=? AND user_id=?",
               room!.id,
               m.user_id,
             );
+            dropRoomUser(room!.id, m.user_id);
+          }
         grantMemberships(room!, ids);
       });
       room = get("SELECT * FROM rooms WHERE id=?", room!.id);
@@ -920,6 +968,9 @@ function deactivate(user: Row) {
       user.id,
     );
   });
+  // Sessions are gone: close the user's connections now instead of
+  // letting broadcasts filter them out one by one.
+  dropUserConnections(user.id);
 }
 function registerUsers(app: RouteCollector) {
   app.get("/autocompletable/users", login, (req, res) => {
@@ -1068,6 +1119,7 @@ function registerUsers(app: RouteCollector) {
         run("DELETE FROM sessions WHERE user_id=?", user.id);
         run("UPDATE users SET status=2,updated_at=? WHERE id=?", time, user.id);
       });
+      dropUserConnections(user.id);
       enqueue("ban-content", { user_id: user.id });
     } else return res.sendStatus(405);
     res.redirect("/users/" + user.id);
@@ -1312,22 +1364,47 @@ function registerSearch(app: RouteCollector) {
       }
       return res.redirect("/searches?" + new URLSearchParams({ q: query }));
     }
-    let rows: Row[] = [];
-    if (query) {
-      const ids = all(
-        "SELECT m.id FROM messages m JOIN message_search_index idx ON idx.rowid=m.id JOIN memberships ms ON ms.room_id=m.room_id WHERE ms.user_id=? AND idx.body MATCH ? ORDER BY m.created_at DESC LIMIT 100",
-        req.user.id,
-        query
-          .split(/\s+/)
-          .map((word) => '"' + word.replaceAll('"', '""') + '"')
-          .join(" "),
-      ).map((r) => r.id);
-      rows = ids
-        .map((id) => messageById(id)!)
-        .sort((a, b) => a.created_at.localeCompare(b.created_at));
-    }
+    // Search fast path: the FTS id query is cheap, everything after
+    // it (message fetches, render, gzip) is cached keyed on the
+    // query, the matched message versions, the recent-search state
+    // and the usual page versions. The search page links back to the
+    // last room, so the session's last_room_id is part of the key.
+    const matchIds: number[] = query
+      ? all(
+          "SELECT m.id FROM messages m JOIN message_search_index idx ON idx.rowid=m.id JOIN memberships ms ON ms.room_id=m.room_id WHERE ms.user_id=? AND idx.body MATCH ? ORDER BY m.created_at DESC LIMIT 100",
+          req.user.id,
+          query
+            .split(/\s+/)
+            .map((word) => '"' + word.replaceAll('"', '""') + '"')
+            .join(" "),
+        ).map((r) => r.id)
+      : [];
+    const rows: Row[] = messagesByIds(matchIds).sort((a, b) =>
+      a.created_at.localeCompare(b.created_at),
+    );
+    const searchAccount = get("SELECT id,updated_at FROM accounts LIMIT 1");
+    const searchKey = [
+      req.path,
+      origin(req),
+      req.user.id,
+      req.user.updated_at,
+      query,
+      get("SELECT MAX(updated_at) AS max FROM searches WHERE user_id=?", req.user.id)?.max || "",
+      rows.map((m) => `${m.id}-${m.updated_at}`).join(","),
+      searchAccount?.updated_at,
+      get(
+        "SELECT id FROM active_storage_attachments WHERE record_type='Account' AND record_id=? AND name='logo'",
+        searchAccount?.id,
+      ) ? 1 : 0,
+      req.session.last_room_id || "",
+      String(req.session._csrf_token || ""),
+      req.get("Turbo-Frame") || "",
+    ].join("|");
+    const cachedSearch = readPage(searchKey);
+    if (cachedSearch !== undefined)
+      return res.type("html").send(cachedSearch);
     const searchMessages = messageData(rows);
-    send(req, res, "search", {
+    const searchHtml = render(req, "search", {
       Messages: searchMessages,
       MessagesHTML: messagesHtml(searchMessages),
       Query: query,
@@ -1336,5 +1413,7 @@ function registerSearch(app: RouteCollector) {
         req.user.id,
       ).map((s) => s.query),
     });
+    writePage(searchKey, searchHtml);
+    res.type("html").send(searchHtml);
   });
 }

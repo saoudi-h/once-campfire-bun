@@ -12,9 +12,17 @@ const env = new nunjucks.Environment(
   { autoescape: true },
 );
 const safe = (value: string) => new nunjucks.runtime.SafeString(value || "");
+const generatedCache = new Map<string, string>();
 function generated(name: string, fallback = "") {
+  const cached = generatedCache.get(name);
+  if (cached !== undefined) return cached;
   const path = new URL(`../assets/generated/${name}`, import.meta.url);
-  return existsSync(path) ? readFileSync(path, "utf8") : fallback;
+  const value = existsSync(path) ? readFileSync(path, "utf8") : fallback;
+  generatedCache.set(name, value);
+  return value;
+}
+export function generatedCacheClear() {
+  generatedCache.clear();
 }
 let manifest: Record<string, { digested_path?: string }> | undefined;
 export function asset(name: string) {
@@ -105,6 +113,48 @@ export function writeMessageFragment(id: unknown, updatedAt: unknown, html: stri
     const victim = fragmentStore.get(oldest.value);
     fragmentStore.delete(oldest.value);
     if (victim) fragmentBytes -= victim.bytes;
+  }
+}
+// Whole-page cache (Rust "cache every part of a page" port): the room
+// show and messages-list HTML only change when the underlying rows
+// change, but render() re-runs nunjucks over ~500KB on every request.
+// Callers build a key from every input that can change the output
+// (room/user/account versions, host, paging anchor, per-session CSRF
+// token) and skip the render on a hit. Same 32MB LRU bound.
+const PAGE_MAX_BYTES = 32 * 1024 * 1024;
+const pageStore = new Map<string, { html: string; bytes: number }>();
+let pageBytes = 0;
+export function pageCacheStats() {
+  return { entries: pageStore.size, bytes: pageBytes };
+}
+export function pageCacheClear() {
+  pageStore.clear();
+  pageBytes = 0;
+}
+export function readPage(key: string): string | undefined {
+  const hit = pageStore.get(key);
+  if (hit === undefined) return undefined;
+  // LRU touch: re-insert so eviction drops least-recently-used first.
+  pageStore.delete(key);
+  pageStore.set(key, hit);
+  return hit.html;
+}
+export function writePage(key: string, html: string): void {
+  const bytes = key.length + html.length + FRAGMENT_ENTRY_OVERHEAD;
+  if (bytes > PAGE_MAX_BYTES / 4) return;
+  const old = pageStore.get(key);
+  if (old !== undefined) {
+    pageBytes -= old.bytes;
+    pageStore.delete(key);
+  }
+  pageStore.set(key, { html, bytes });
+  pageBytes += bytes;
+  while (pageBytes > PAGE_MAX_BYTES && pageStore.size > 0) {
+    const oldest = pageStore.keys().next();
+    if (oldest.done) break;
+    const victim = pageStore.get(oldest.value);
+    pageStore.delete(oldest.value);
+    if (victim) pageBytes -= victim.bytes;
   }
 }
 export function userData(user: Row | null | undefined) {

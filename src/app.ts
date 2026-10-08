@@ -48,6 +48,47 @@ const SEC_HEADERS = {
 // (Bun only ships the synchronous Bun.gzipSync).
 const gzipAsync = promisify(zlibGzip);
 
+// Compressed-response cache (Rust "keep the compressed form of every
+// page" port): gzip of a 500KB page costs milliseconds on every hit
+// although the bytes never change. Bodies are keyed by the string
+// itself — a page-cache hit returns the same instance (O(1)), an
+// equal string still saves the deflate for one memcmp. Bounded LRU.
+const GZIP_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const gzipCache = new Map<string, Buffer>();
+let gzipCacheBytes = 0;
+function cachedGzip(body: string): Buffer | undefined {
+  const hit = gzipCache.get(body);
+  if (hit === undefined) return undefined;
+  gzipCache.delete(body);
+  gzipCache.set(body, hit);
+  return hit;
+}
+function storeGzip(body: string, gz: Buffer): void {
+  const bytes = body.length + gz.length + 64;
+  if (bytes > GZIP_CACHE_MAX_BYTES / 4) return;
+  const old = gzipCache.get(body);
+  if (old !== undefined) {
+    gzipCacheBytes -= body.length + old.length + 64;
+    gzipCache.delete(body);
+  }
+  gzipCache.set(body, gz);
+  gzipCacheBytes += bytes;
+  while (gzipCacheBytes > GZIP_CACHE_MAX_BYTES && gzipCache.size > 0) {
+    const oldest = gzipCache.keys().next();
+    if (oldest.done) break;
+    const victim = gzipCache.get(oldest.value);
+    gzipCache.delete(oldest.value);
+    if (victim) gzipCacheBytes -= oldest.value.length + victim.length + 64;
+  }
+}
+export function gzipCacheStats() {
+  return { entries: gzipCache.size, bytes: gzipCacheBytes };
+}
+export function gzipCacheClear() {
+  gzipCache.clear();
+  gzipCacheBytes = 0;
+}
+
 // Elysia path syntax: Express `:param` works; Express `*` splat and
 // `:param(...)` patterns need translation; `{*name}` -> `*`.
 function toElysiaPath(p: string): string {
@@ -209,8 +250,25 @@ export function createApp() {
       try {
         // Async deflate runs on the thread pool; the sync
         // variant blocked the JS thread on every large response.
-        const gz = await gzipAsync(body);
-        if (gz.length < body.length) { body = gz; headers["content-encoding"] = "gzip"; }
+        // NOTE: res.setHeader("Content-Length") may already carry the
+        // pre-gzip length (Express helper parity) — drop it first, or
+        // strict clients (Ruby Net::HTTP) truncate the gzip stream.
+        delete headers["content-length"];
+        // Cache only idempotent responses: POST bodies carry fresh
+        // ids/tokens and would pollute the store.
+        const cacheable = request.method === "GET" || request.method === "HEAD";
+        let gz = cacheable ? cachedGzip(body) : undefined;
+        if (gz === undefined) {
+          const fresh = await gzipAsync(body);
+          if (fresh.length < body.length) {
+            gz = fresh;
+            if (cacheable) storeGzip(body, fresh);
+          }
+        }
+        if (gz !== undefined) {
+          body = gz;
+          headers["content-encoding"] = "gzip";
+        }
       } catch {}
     }
     if (body !== "" && headers["content-length"] === undefined && typeof body === "string")

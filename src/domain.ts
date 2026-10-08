@@ -6,7 +6,7 @@ import {
   mentionIds,
   reconcileEmbeds,
 } from "./richtext.ts";
-import { publish } from "./cable.ts";
+import { publish, dropRoom } from "./cable.ts";
 import { stream } from "./rails.ts";
 import { messageFragment, messageData } from "./rendering.ts";
 import { enqueue } from "./jobs.ts";
@@ -30,6 +30,25 @@ const presentation =
   "SELECT m.*,u.name AS creator_name,u.bio AS creator_bio,u.updated_at AS creator_updated_at,r.name AS room_name,r.type AS room_type FROM messages m JOIN users u ON u.id=m.creator_id JOIN rooms r ON r.id=m.room_id";
 export const messageById = (id: string | number) =>
   get(presentation + " WHERE m.id=?", Number(id));
+// Batch version of messageById: one query for N ids, rows returned in
+// the requested order (missing ids skipped). The search page resolved
+// up to 100 ids with one query each.
+export function messagesByIds(ids: Array<string | number>): Row[] {
+  const nums = [
+    ...new Set(ids.map(Number).filter((n) => Number.isSafeInteger(n))),
+  ];
+  if (!nums.length) return [];
+  const byId = new Map(
+    all(
+      presentation + ` WHERE m.id IN (${nums.map(() => "?").join(",")})`,
+      ...nums,
+    ).map((r) => [r.id, r] as const),
+  );
+  return ids.map(Number).flatMap((id) => {
+    const hit = byId.get(id);
+    return hit === undefined ? [] : [hit];
+  });
+}
 export function messagesForRoom(
   id: string | number,
   {
@@ -148,12 +167,24 @@ export function indexMessage(id: string | number, body: string, filename = "") {
     plainText(body) || filename,
   );
 }
+// Index a brand-new message: the DELETE is a guaranteed no-op for a
+// fresh rowid, so skip it (one fewer write statement on the hot path).
+export function indexNewMessage(id: string | number, body: string) {
+  run(
+    "INSERT INTO message_search_index(rowid,body) VALUES(?,?)",
+    Number(id),
+    plainText(body),
+  );
+}
 export function createMessage(
   roomId: string | number,
   userId: string | number,
   body: any = "",
   clientId: any = null,
 ) {
+  // Pure CPU outside the write lock: sanitize parses HTML.
+  const content = sanitize(body);
+  const hasEmbeds = content.includes("action-text-attachment");
   return transaction(() => {
     if (
       !get(
@@ -165,8 +196,7 @@ export function createMessage(
       throw Object.assign(new Error("Room membership required"), {
         status: 403,
       });
-    const time = now(),
-      content = sanitize(body);
+    const time = now();
     const result = run(
       "INSERT INTO messages(room_id,creator_id,client_message_id,created_at,updated_at) VALUES(?,?,?,?,?)",
       Number(roomId),
@@ -176,22 +206,18 @@ export function createMessage(
       time,
     );
     const id = Number(result.lastInsertRowid);
-    run(
+    const rich = run(
       "INSERT INTO action_text_rich_texts(name,record_type,record_id,body,created_at,updated_at) VALUES('body','Message',?,?,?,?)",
       id,
       content,
       time,
       time,
     );
-    reconcileEmbeds(
-      get(
-        "SELECT id FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
-        id,
-      )!.id,
-      content,
-      Number(userId),
-    );
-    indexMessage(id, content);
+    // Plain-text posts carry no embeds and a new message owns no
+    // embed rows yet: skip the parse and the queries entirely.
+    if (hasEmbeds)
+      reconcileEmbeds(Number(rich.lastInsertRowid), content, Number(userId));
+    indexNewMessage(id, content);
     run("UPDATE rooms SET updated_at=? WHERE id=?", time, Number(roomId));
     const cutoff = new Date(Date.now() - 60000)
       .toISOString()
@@ -213,10 +239,11 @@ export function updateMessage(
   body: any = null,
   userId: any = message.creator_id,
 ) {
+  // Pure CPU outside the write lock: sanitize parses HTML.
+  const content = body === null ? null : sanitize(body);
   transaction(() => {
     const time = now();
-    if (body !== null) {
-      const content = sanitize(body);
+    if (content !== null) {
       run(
         "INSERT INTO action_text_rich_texts(name,record_type,record_id,body,created_at,updated_at) VALUES('body','Message',?,?,?,?) ON CONFLICT(record_type,record_id,name) DO UPDATE SET body=excluded.body,updated_at=excluded.updated_at",
         message.id,
@@ -347,6 +374,7 @@ export function deleteRoom(room: Row) {
     run("DELETE FROM memberships WHERE room_id=?", room.id);
     run("DELETE FROM rooms WHERE id=?", room.id);
   });
+  dropRoom(room.id);
   publish(
     "rooms",
     `<turbo-stream action="remove" target="list_rooms_${room.type.split("::").pop().toLowerCase()}_${room.id}"></turbo-stream>`,
