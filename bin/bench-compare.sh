@@ -113,10 +113,14 @@ PY
   echo "date: $(date -Is)"
   echo "host: $(uname -r), $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs), $(nproc) threads"
   echo "server cpus: $SERVER_CPUS; loadgen cpus: $LOADGEN_CPUS; network: host"
+  echo "http secs: $HTTP_SECS; concs: $CONCS; cable clients: $CABLE_CLIENTS; tput secs: $CABLE_TPUT_SECS"
   echo "bun image: $BUN_IMAGE $(docker image inspect -f '{{.Id}} {{.Created}}' "$BUN_IMAGE")"
   echo "rust image: $RUST_IMAGE $(docker image inspect -f '{{.Id}} {{.Created}}' "$RUST_IMAGE")"
   echo "bun HEAD: $(git -C "$HERE" rev-parse --short HEAD) (dirty: $(git -C "$HERE" status --porcelain | wc -l) files)"
   echo "rust HEAD: $(git -C "$RUST_ROOT" rev-parse --short HEAD 2>/dev/null || echo n/a)"
+  # The Rust image bakes GIT_REVISION at build time; surface it so the
+  # report can be tied to an exact checkout even when the sibling tree moved.
+  echo "rust image revision: $(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$RUST_IMAGE" | grep -E '^(GIT_REVISION|APP_VERSION)=' | tr '\n' ' ')"
 } > "$OUT/env.txt"
 cat "$OUT/env.txt" >&2
 
@@ -153,7 +157,7 @@ run_rep() {
       if [ "$path" = POST ]; then args=(--post-room "$WRITE_ROOM" --csrf "$csrf"); else args=(--path "$path"); fi
       lg http --base "$BASE" --cookie "$cookie" "${args[@]}" --conc 4 --duration 2 >/dev/null
       for c in $CONCS; do
-        local res dur=8; [ "$c" = 1 ] && dur=5
+        local res dur=$HTTP_SECS; [ "$c" = 1 ] && dur=5
         res=$(lg http --base "$BASE" --cookie "$cookie" "${args[@]}" --conc "$c" --duration "$dur")
         http_json=$(python3 -c 'import json,sys; a=json.loads(sys.argv[1]); r=json.loads(sys.argv[2]); r["route"]=sys.argv[3]; a.append(r); print(json.dumps(a))' "$http_json" "$res" "$name")
         log "$app rep $rep: $name c=$c $(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print(r["rps"], "rps p50", r["latency"].get("p50_ms"), "p99", r["latency"].get("p99_ms"), r["statuses"], "err", r["errors"])' "$res")"
@@ -182,7 +186,25 @@ try:
     up = json.loads(upload)
 except Exception:
     up = {}
-json.dump({"app": app, "rep": int(rep), "http": json.loads(http), "cable": json.loads(cable), "upload": up}, open(f, "w"), indent=1)
+http_runs = json.loads(http)
+cable_runs = json.loads(cable)
+# Fail loudly on missing or errored data: a silent partial result is
+# worse than no result. HTTP errors/non-2xx, incomplete cable
+# subscriptions, and empty uploads all abort the run.
+problems = []
+for h in http_runs:
+    bad_status = {k: v for k, v in h.get("statuses", {}).items() if int(k) >= 400}
+    if h.get("errors") or bad_status or not h.get("ok"):
+        problems.append(f"http {h.get('route')} c={h.get('conc')}: statuses={h.get('statuses')} errors={h.get('errors')}")
+for c in cable_runs:
+    if c.get("ready") != c.get("clients"):
+        problems.append(f"cable: ready={c.get('ready')} want={c.get('clients')}")
+if "upload" in f:
+    if not up.get("runs"):
+        problems.append("upload: no runs recorded")
+if problems:
+    raise SystemExit(f"{app} rep {rep} FAILED:\n" + "\n".join(problems))
+json.dump({"app": app, "rep": int(rep), "http": http_runs, "cable": cable_runs, "upload": up}, open(f, "w"), indent=1)
 PY
   docker rm -f "$CONTAINER" >/dev/null
   log "$app rep $rep: done -> $f"

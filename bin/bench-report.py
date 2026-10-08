@@ -46,7 +46,7 @@ def cell(vals):
     return m, fmt(m) + spread
 
 
-def row(name, getter, higher_better):
+def row(name, getter, higher_better=True, ratio=True):
     meds, cells = {}, []
     for a in apps:
         vals = []
@@ -58,11 +58,11 @@ def row(name, getter, higher_better):
         m, c = cell(vals)
         meds[a] = m
         cells.append(c)
-    ratio = "-"
-    if len(apps) == 2 and meds.get("bun") and meds.get("rust"):
+    text = "-"
+    if ratio and len(apps) == 2 and meds.get("bun") and meds.get("rust"):
         x = meds["bun"] / meds["rust"] if higher_better else meds["rust"] / meds["bun"]
-        ratio = f"{x:.2f}x"
-    print(f"| {name} | " + " | ".join(cells) + f" | {ratio} |")
+        text = f"{x:.2f}x"
+    print(f"| {name} | " + " | ".join(cells) + f" | {text} |")
 
 
 def header(title):
@@ -92,6 +92,13 @@ def http(route, conc, key):
     return get
 
 
+def http_bytes(route, conc):
+    def get(r):
+        h = next(h for h in r["http"] if h["route"] == route and h["conc"] == conc)
+        return h.get("avg_bytes")
+    return get
+
+
 header("HTTP (c = concurrent connections)")
 for route, conc in routes:
     row(f"{route} c={conc} req/s", http(route, conc, "rps"), True)
@@ -102,10 +109,19 @@ for route, conc in routes:
     if conc == 16:
         row(f"{route} c=16 p99 ms", http(route, conc, "p99_ms"), False)
 
-print("\n### HTTP errors / non-2xx (first rep, per app)\n")
+header("Response sizes (avg bytes on the wire; gzip negotiated)")
+for route, conc in routes:
+    if conc == 16:
+        # No "advantage" ratio here: near 1.00 means like-for-like,
+        # far from 1 flags a non-equivalent comparison (see sidebar audit).
+        row(f"{route} c=16 bytes", http_bytes(route, conc), ratio=False)
+
+print("\n### HTTP errors / non-2xx (all reps, per app)\n")
 for a in apps:
-    bad = [f"{h['route']} c={h['conc']}: {h['statuses']} errors={h['errors']}" for h in runs[a][0]["http"]
-           if h["errors"] or any(int(k) >= 400 for k in h["statuses"])]
+    bad = []
+    for r in runs[a]:
+        bad += [f"rep {r['rep']} {h['route']} c={h['conc']}: {h['statuses']} errors={h['errors']}" for h in r["http"]
+                if h["errors"] or any(int(k) >= 400 for k in h["statuses"])]
     print(f"- {a}: " + ("; ".join(bad) if bad else "none"))
 
 def cable_at(n, key):
