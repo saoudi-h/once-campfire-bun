@@ -183,7 +183,16 @@ export function createMessage(
   clientId: any = null,
 ) {
   // Pure CPU outside the write lock: sanitize parses HTML.
-  const content = sanitize(body);
+  return insertMessage(roomId, userId, sanitize(body), clientId);
+}
+// Message insert on pre-sanitized content (shared by createMessage
+// and the dedicated writer process, ADR-001).
+export function insertMessage(
+  roomId: string | number,
+  userId: string | number,
+  content: string,
+  clientId: any = null,
+) {
   const hasEmbeds = content.includes("action-text-attachment");
   return transaction(() => {
     const time = now();

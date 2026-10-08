@@ -20,8 +20,12 @@
 
 ## 🔮 Backlog
 
-- [x] **[PERF-07]** `/up` trivial-route overhead (Elysia routing cost) `Priority: ⚪` `Complexity: S`
-- [ ] **[PERF-10]** Single-writer IPC for mutations (Rust writer-thread model, cross-process) `Priority: 🔵` `Complexity: XL`
+- [ ] **[PERF-12]** Writer group-commit batching (amortize BEGIN/COMMIT+FTS over N posts) `Priority: ⚪` `Complexity: M`
 - [x] **[PERF-11]** Avatar/static-asset serving gap (avatar x7 vs Rust front cache) `Priority: 🔵` `Complexity: M`
 - [x] **[PERF-08]** Cable scaling validation at 500/1000 clients `Priority: 🔵` `Complexity: M`
 - [x] **[PERF-09]** Interleaved multi-rep runs for publishable numbers `Priority: 🔵` `Complexity: S`
+- [x] **[PERF-10]** Single-writer IPC for plain posts, writer child supervised by master (`ADR-001`) `Priority: 🔵` `Complexity: XL`
+- [x] **[PERF-07]** `/up` native route `Priority: ⚪` `Complexity: S`
+- [x] **[PERF-08]** Cable scaling validation at 500/1000 `Priority: 🔵` `Complexity: M`
+- [x] **[PERF-09]** Interleaved compare harness + reports `Priority: 🔵` `Complexity: S`
+- [x] **[PERF-11]** Avatar/static-asset serving `Priority: 🔵` `Complexity: M`

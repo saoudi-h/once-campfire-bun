@@ -3,6 +3,7 @@ import { startWorker, stopWorker } from "./jobs.ts";
 import { startCheckpointer, stopCheckpointer } from "./checkpoint.ts";
 import { startFanoutServer, connectFanout, fanout } from "./fanout.ts";
 import { setFanout } from "./cable.ts";
+import { connectWriter } from "./write-client.ts";
 
 const port = Number(process.env.HTTP_PORT || 8080);
 const bind = process.env.BIND || "0.0.0.0";
@@ -41,12 +42,40 @@ if (workers > 1 && !isWorker) {
     });
   };
   for (let i = 0; i < workers; i++) spawnWorker();
+  // Dedicated SQLite writer (ADR-001): single process executing
+  // message-create transactions; HTTP workers await it instead of
+  // busy-sleeping on the writer lock.
+  let writer: Bun.Subprocess | null = null;
+  const spawnWriter = () => {
+    if (shuttingDown) return;
+    writer = Bun.spawn(
+      [process.execPath, new URL("./writer.ts", import.meta.url).pathname],
+      {
+        env: { ...process.env, CAMPFIRE_WRITER: "1" },
+        stdout: "inherit",
+        stderr: "inherit",
+      },
+    );
+    writer.exited.then(() => {
+      writer = null;
+      if (!shuttingDown) {
+        console.error("Campfire writer exited; restarting");
+        spawnWriter();
+      }
+    });
+  };
+  spawnWriter();
   console.log(
     `Campfire Bun master on ${port} with ${workers} workers`,
   );
   const close = () => {
     shuttingDown = true;
     for (const child of children) child.kill();
+    try {
+      writer?.kill();
+    } catch {
+      // Already gone.
+    }
     stopCheckpointer();
     stopWorker().finally(() =>
       setTimeout(() => process.exit(0), 100).unref(),
@@ -57,8 +86,13 @@ if (workers > 1 && !isWorker) {
 } else {
   // Single-process mode, or an HTTP worker spawned by the
   // master. Workers share the listener port with SO_REUSEPORT.
+  // Only master-spawned workers use the dedicated writer (single
+  // mode has no lock contention, so it keeps local writes).
   connectFanout();
-  if (isWorker) setFanout(fanout);
+  if (isWorker) {
+    setFanout(fanout);
+    connectWriter();
+  }
   if (!isWorker) await startWorker();
   startCheckpointer();
   const app = createApp();

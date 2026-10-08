@@ -50,6 +50,11 @@ Rust; sidebar/post/cable remain (see `.autonomos/TASKS.md`).
   tests never load it). Jobs queue is best-effort (may lose tail on
   crash, like Rust's in-memory queues). Composite index
   `messages(room_id, created_at)` added at boot for old DBs.
+- **Writes:** attachment-less message POSTs go through the dedicated
+  writer child over a unix socket (`src/writer.ts` + `src/write-client.ts`,
+  ADR-001) in multi-worker mode; single-process and tests use local
+  writes. All other mutations write directly. Never add a second
+  writer path without updating the ADR.
 
 ## 📁 Key Directories
 

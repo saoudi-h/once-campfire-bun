@@ -32,9 +32,10 @@ import {
   iso,
   epoch,
 } from "./rendering.ts";
-import { escape, plainText, messagePlainText } from "./richtext.ts";
+import { escape, plainText, messagePlainText, sanitize } from "./richtext.ts";
 import * as rails from "./rails.ts";
 import { publish, dropUserConnections, dropRoomUser } from "./cable.ts";
+import { remoteCreateMessage, writerAvailable } from "./write-client.ts";
 import { dropAvatarCache } from "./public.ts";
 import {
   storeUpload,
@@ -615,13 +616,24 @@ export function registerRoutes(app: RouteCollector) {
           if (item == null) {
             // Fast path (the benched shape): nothing to link, so no
             // outer transaction — createMessage's short txn holds
-            // the writer lock alone.
-            message = createMessage(
-              room.id,
-              user.id,
-              body,
-              value(req, "message", "client_message_id") || null,
-            );
+            // the writer lock alone. Under a master, the dedicated
+            // writer executes it instead (ADR-001): awaiting yields
+            // the loop instead of busy-sleeping on the lock.
+            if (writerAvailable()) {
+              message = await remoteCreateMessage(
+                room.id,
+                user.id,
+                sanitize(body),
+                value(req, "message", "client_message_id") || null,
+              );
+            } else {
+              message = createMessage(
+                room.id,
+                user.id,
+                body,
+                value(req, "message", "client_message_id") || null,
+              );
+            }
           } else {
             message = stagedFiles(() =>
               transaction(() => {
