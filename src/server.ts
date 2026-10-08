@@ -1,5 +1,6 @@
 import { createApp } from "./app.ts";
 import { startWorker, stopWorker } from "./jobs.ts";
+import { startCheckpointer, stopCheckpointer } from "./checkpoint.ts";
 import { startFanoutServer, connectFanout, fanout } from "./fanout.ts";
 import { setFanout } from "./cable.ts";
 
@@ -20,6 +21,7 @@ if (workers > 1 && !isWorker) {
   // sharing the port via SO_REUSEPORT.
   let shuttingDown = false;
   await startWorker();
+  startCheckpointer();
   startFanoutServer();
   const children = new Set<Bun.Subprocess>();
   const spawnWorker = () => {
@@ -45,6 +47,7 @@ if (workers > 1 && !isWorker) {
   const close = () => {
     shuttingDown = true;
     for (const child of children) child.kill();
+    stopCheckpointer();
     stopWorker().finally(() =>
       setTimeout(() => process.exit(0), 100).unref(),
     );
@@ -57,10 +60,12 @@ if (workers > 1 && !isWorker) {
   connectFanout();
   if (isWorker) setFanout(fanout);
   if (!isWorker) await startWorker();
+  startCheckpointer();
   const app = createApp();
   app.listen({ port, hostname: bind, reusePort: workers > 1 });
   console.log(`Campfire Bun listening on ${port}`);
   const close = async () => {
+    stopCheckpointer();
     await stopWorker();
     (app as any).stop?.();
     setTimeout(() => process.exit(0), 1000).unref();

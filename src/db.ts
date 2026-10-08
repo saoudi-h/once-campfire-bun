@@ -31,7 +31,14 @@ export function initialize(
   if (path !== ":memory:")
     mkdirSync(dirname(resolve(path)), { recursive: true });
   connection = new Database(path);
-  connection.exec("PRAGMA busy_timeout=10000; PRAGMA foreign_keys=ON;");
+  // Durability matches Rails (WAL + NORMAL, like the Rust port):
+  // commits don't fsync. Auto-checkpoint is off here: it would run
+  // inside the committing transaction on the event loop thread
+  // (~12ms of fsyncs every ~64 posts). server.ts runs PASSIVE
+  // checkpoints on a worker thread instead (see checkpoint.ts).
+  connection.exec(
+    "PRAGMA busy_timeout=10000; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=0;",
+  );
   if (
     !connection
       .query("SELECT name FROM sqlite_master WHERE name='users'")
@@ -42,6 +49,12 @@ export function initialize(
     );
   }
   validateSchema(connection);
+  // Rolling upgrade for databases created before the composite
+  // room/time index existed (same as the Rust port adds at boot;
+  // keeps long rooms fast without a Rails migration).
+  connection.exec(
+    'CREATE INDEX IF NOT EXISTS "index_messages_on_room_id_and_created_at" ON "messages" ("room_id", "created_at")',
+  );
   connection.exec("PRAGMA journal_mode=WAL;");
   return connection;
 }

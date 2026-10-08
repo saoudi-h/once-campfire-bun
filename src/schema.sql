@@ -45,6 +45,7 @@ FOREIGN KEY ("creator_id")
 );
 CREATE INDEX "index_messages_on_creator_id" ON "messages" ("creator_id");
 CREATE INDEX "index_messages_on_room_id" ON "messages" ("room_id");
+CREATE INDEX "index_messages_on_room_id_and_created_at" ON "messages" ("room_id", "created_at");
 CREATE TABLE "push_subscriptions" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL, "auth_key" varchar, "created_at" datetime(6) NOT NULL, "endpoint" varchar, "p256dh_key" varchar, "updated_at" datetime(6) NOT NULL, "user_agent" varchar, "user_id" integer NOT NULL, CONSTRAINT "fk_rails_43d43720fc"
 FOREIGN KEY ("user_id")
   REFERENCES "users" ("id")
