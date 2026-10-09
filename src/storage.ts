@@ -6,7 +6,6 @@ import { execFile } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { CompatReq, CompatRes } from "./compat.ts";
 import type { Row } from "./db.ts";
-import sharp from "sharp";
 import { transformImage, imageMetadata } from "./image.ts";
 import { all, get, run, transaction, now } from "./db.ts";
 import * as rails from "./rails.ts";
@@ -313,11 +312,16 @@ export async function variant(blob: Row, dimensions: number[] = [1200, 800], for
   if (existing && fs.existsSync(pathFor(existing.key))) return existing;
   const width = dimensions[0] as number;
   const height = dimensions[1] as number;
+  // Rails parity is a plain resize_to_limit (no sharpen anywhere in the
+  // reference): sharpening was an Express-port artifact that also cost
+  // ~13ms on the sharp path (PERF-21). The input hint lets slow decodes
+  // (WebP) and impossible ones (TIFF/AVIF/HEIC on Linux) skip Bun.
+  const inputFormat = (blob.content_type || "").replace(/^image\//, "").toLowerCase();
   const raw = await transformImage(pathFor(blob.key), {
     width,
     height,
     format,
-    sharpen: true,
+    inputFormat: inputFormat === "jpg" ? "jpeg" : inputFormat,
   });
   const metadata = await imageMetadata(raw);
   return stagedFiles(() =>

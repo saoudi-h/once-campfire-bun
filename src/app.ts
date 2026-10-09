@@ -20,6 +20,7 @@ import { cacheLimitMb } from "./rendering.ts";
 import { registerOpengraph } from "./opengraph.ts";
 import { allowLogin } from "./rate_limit.ts";
 import { cableWs, startCablePing } from "./cable.ts";
+import { dataPath } from "./data.ts";
 import {
   buildReq, makeRes, sessionCookieHeaders, guardRequest, resolveFiles,
   type CompatReq as FacadeReq, type CompatRes as FacadeRes,
@@ -334,8 +335,10 @@ export function createApp() {
   }
 
   // --- static assets (mirror of app.js static mounts) ---
-  const genDir = path.resolve("assets/generated/public");
-  const assetsDir = path.resolve("assets/generated/public/assets");
+  // Resolved once via dataPath so compiled binaries serve embedded
+  // assets ($bunfs) with no cwd dependence; missing files still 404.
+  const genDir = dataPath("assets", "generated", "public");
+  const assetsDir = dataPath("assets", "generated", "public", "assets");
   const assetCache = new Map<string, Buffer>();
   async function staticFile(file: string, immutable: boolean): Promise<Response | null> {
     try {

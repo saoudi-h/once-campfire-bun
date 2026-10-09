@@ -61,6 +61,40 @@ test("actual JPEG thumbnail shrinks 3840x2160 to 1200x675, caches and purges own
   );
   assert.equal(fs.existsSync(storage.pathFor(out.key)), false);
 });
+test("TIFF/AVIF/WebP sources fall back to sharp for JPEG variants (PERF-21)", async () => {
+  // Bun.Image can't decode TIFF/AVIF on Linux and decodes WebP ~4x slower
+  // than sharp: all three must still produce valid JPEG variants.
+  const cases: Array<[string, string, string]> = [
+    ["scan.tiff", "image/tiff", "tiff"],
+    ["clip.avif", "image/avif", "avif"],
+    ["shot.webp", "image/webp", "webp"],
+  ];
+  let n = 0;
+  for (const [name, mimetype, fmt] of cases) {
+    const raw = await sharp({
+      create: { width: 800, height: 600, channels: 3, background: "#3355cc" },
+    })
+      .toFormat(fmt as "tiff")
+      .toBuffer();
+    const blob = storage.storeUpload(
+      { buffer: raw, originalname: name, mimetype },
+      "Message",
+      200 + n,
+      "attachment",
+    );
+    try {
+      const out = await storage.variant(blob, [400, 300], "jpeg");
+      const metadata = await sharp(storage.pathFor(out.key)).metadata();
+      assert.equal(metadata.format, "jpeg");
+      assert.equal(metadata.width, 400);
+      assert.equal(metadata.height, 300);
+    } finally {
+      storage.removeAttachment("Message", 200 + n, "attachment");
+      storage.purgeBlob(blob.id);
+    }
+    n++;
+  }
+});
 test("outer SQL failure rolls back both blobs and native files", () => {
   const count = files().length;
   assert.throws(() =>

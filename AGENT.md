@@ -18,7 +18,9 @@ Rust; sidebar/post/cable remain (see `.autonomos/TASKS.md`).
 ## ⚙️ Workflow & Preferences
 
 - **Runtime:** Bun only (`bun <file>`, `bun test`, `bun install`). Never
-  `node`, `npm`, `npx`, dotenv (Bun loads `.env`).
+  `node`, `npm`, `npx`, dotenv (Bun loads `.env`). Verify the runtime
+  with `bun --revision`: bare `bun --version` prints `1.4.3` even for
+  canary builds (e.g. `1.4.3-canary.1`).
 - **Tests:** `bun bin/test.js` (one `bun test` process per file: each
   sets its own `process.env.DATABASE_PATH`). Single file:
   `bun test test/<name>.test.ts`. Full green + `bun run typecheck`

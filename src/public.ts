@@ -1,10 +1,10 @@
 import fs from "node:fs";
-import path from "node:path";
 import crypto from "node:crypto";
 import QRCode from "qrcode";
 import { get } from "./db.ts";
 import * as rails from "./rails.ts";
 import { makeRes, type CompatReq, type CompatRes } from "./compat.ts";
+import { dataPath } from "./data.ts";
 import {
   variant,
   pathFor,
@@ -64,11 +64,11 @@ let botAvatarSvg = "";
 let initialsTemplate = "";
 function staticAvatars() {
   botAvatarSvg ||= fs.readFileSync(
-    "reference/app/assets/images/default-bot-avatar.svg",
+    dataPath("reference/app/assets/images/default-bot-avatar.svg"),
     "utf8",
   );
   initialsTemplate ||= fs.readFileSync(
-    "reference/app/views/users/avatars/show.svg.erb",
+    dataPath("reference/app/views/users/avatars/show.svg.erb"),
     "utf8",
   );
   return { botAvatarSvg, initialsTemplate };
@@ -262,7 +262,7 @@ export function registerPublic(
         .type("png")
         .send(
           fs.readFileSync(
-            path.join("reference/app/assets/images/logos", filename),
+            dataPath("reference/app/assets/images/logos", filename),
           ),
         );
     } catch {
@@ -311,7 +311,7 @@ export function registerPublic(
   for (const __p of ["/service-worker", "/service-worker.js"]) add("GET", __p, (req, res) =>
     res
       .type("application/javascript")
-      .send(fs.readFileSync("reference/app/views/pwa/service_worker.js")),
+      .send(fs.readFileSync(dataPath("reference/app/views/pwa/service_worker.js"))),
   );
   add("GET", "/qr_code/:id", async (req, res) => {
     try {
