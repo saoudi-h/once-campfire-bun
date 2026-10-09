@@ -340,6 +340,33 @@ export function createApp() {
   const genDir = dataPath("assets", "generated", "public");
   const assetsDir = dataPath("assets", "generated", "public", "assets");
   const assetCache = new Map<string, Buffer>();
+  // Content types for static files: the official byte contracts check
+  // `text/css` (and browsers need correct types everywhere). Extension
+  // map mirrors the Rails asset set; unknown stays octet-stream.
+  const STATIC_TYPES: Record<string, string> = {
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".map": "application/json",
+    ".json": "application/json",
+    ".webmanifest": "application/manifest+json",
+    ".html": "text/html",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+  };
+  function staticType(name: string): string | undefined {
+    const dot = name.lastIndexOf(".");
+    return dot < 0 ? undefined : STATIC_TYPES[name.slice(dot).toLowerCase()];
+  }
   async function staticFile(file: string, immutable: boolean): Promise<Response | null> {
     try {
       const st = fs.statSync(file);
@@ -347,6 +374,8 @@ export function createApp() {
       const f = Bun.file(file);
       const h: Record<string, string> = { ...SEC_HEADERS };
       if (immutable) { h["cache-control"] = "public, max-age=31536000, immutable"; }
+      const t = staticType(file);
+      if (t) h["content-type"] = t;
       return new Response(f as any, { status: 200, headers: h as any });
     } catch { return null; }
   }
@@ -367,12 +396,15 @@ export function createApp() {
         return new Response("nf", { status: 404 });
       }
     }
+    const headers: Record<string, string> = {
+      ...SEC_HEADERS,
+      "cache-control": "public, max-age=31536000, immutable",
+    };
+    const t = staticType(rel);
+    if (t) headers["content-type"] = t;
     return new Response(data as any, {
       status: 200,
-      headers: {
-        ...SEC_HEADERS,
-        "cache-control": "public, max-age=31536000, immutable",
-      } as any,
+      headers: headers as any,
     });
   });
   elysia.get("/*", async (ctx: any) => {

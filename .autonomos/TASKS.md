@@ -15,6 +15,10 @@
 - [x] **[PERF-17]** Bun/Elysia perf pass: build settings, runtime flags, Bun 1.4.3-canary check `Priority: 🔵` `Complexity: M`
 - [x] **[PERF-18]** Bun.Image for hot thumbnail path (jpeg/png), lazy sharp fallback `Priority: 🟠` `Complexity: M`
 - [x] **[PERF-19]** `bun build --compile` support: data path, writer env dispatch, first-boot race `Priority: 🟠` `Complexity: M`
+- [x] **[PERF-20]** Bun 1.4.3 stable re-measure + Elysia beta.21→.27 + config audit `Priority: 🔵` `Complexity: M`
+- [x] **[PERF-21]** Image fallback matrix (Bun.Image vs sharp per format) + compile-flag stacking + canary adoption `Priority: 🟠` `Complexity: L`
+- [x] **[PORT-01]** Port Express 1fc0949 remainder: JSON-path redundant messageById + message_creation test gaps `Priority: 🔵` `Complexity: S`
+- [x] **[HARNESS-01]** Verification-harness assessment + contract compliance (19/19 preflight) `Priority: 🔵` `Complexity: M`
 
 ## ✅ Done
 
@@ -37,4 +41,6 @@
 
 ## 🔮 Backlog
 
+- [/] **[PERF-22]** Study Rust Oct-7 response cache, adapt authenticated whole-response caching `Priority: 🟠` `Complexity: L`
+- [ ] **[HARNESS-02]** Fork adapter + timed benchmark + upstream PR decision (checklist in PORT-01 worklog) `Priority: 🔵` `Complexity: M`
 - [ ] **[PERF-16]** Thumbnail serving: direct file serve vs redirect chain (GET thumb 1.3ms vs 0.2ms) `Priority: ⚪` `Complexity: S`

@@ -1436,7 +1436,7 @@ function registerSearch(app: RouteCollector) {
     // last room, so the session's last_room_id is part of the key.
     const matchIds: number[] = query
       ? all(
-          "SELECT m.id FROM messages m JOIN message_search_index idx ON idx.rowid=m.id JOIN memberships ms ON ms.room_id=m.room_id WHERE ms.user_id=? AND idx.body MATCH ? ORDER BY m.created_at DESC LIMIT 100",
+          "SELECT m.id FROM messages m JOIN message_search_index idx ON idx.rowid=m.id JOIN memberships ms ON ms.room_id=m.room_id WHERE ms.user_id=? AND idx.body MATCH ? ORDER BY m.id DESC LIMIT 100",
           req.user.id,
           query
             .split(/\s+/)
@@ -1444,9 +1444,9 @@ function registerSearch(app: RouteCollector) {
             .join(" "),
         ).map((r) => r.id)
       : [];
-    const rows: Row[] = messagesByIds(matchIds).sort((a, b) =>
-      a.created_at.localeCompare(b.created_at),
-    );
+    // Display oldest first like the reference (contract: id DESC reversed).
+    // created_at ordering diverges under seed clock games; id is stable.
+    const rows: Row[] = messagesByIds(matchIds).sort((a, b) => a.id - b.id);
     const searchAccount = get("SELECT id,updated_at FROM accounts LIMIT 1");
     const searchKey = [
       req.path,

@@ -35,8 +35,8 @@
 
 {% macro room_invitation(dot) %}<div id="system_welcome" class="message message--formatted txt-align-center center"><div class="message__body center"><div class="message__body-content position-relative"><figure class="account-logo avatar center margin-block-end txt-large"><img src="/account/logo" alt="Account logo" width="300" height="300"></figure><div class="flex align-center gap"><div class="system-welcome--translation">{{ translate("invite_message") }}</div><p><strong>Welcome to Campfire</strong><br>To invite people to chat, share the join link below.</p></div>{{ invite(dot) }}</div></div></div>{% endmacro %}
 
-{% macro messages(dot) %}{% if dot.MessagesHTML %}{{ dot.MessagesHTML }}{% else %}{% for item1 in dot.Messages %}{{ message(item1) }}{% endfor %}{% endif %}{% endmacro %}
-{% macro message(dot) %}{% if dot.Fragment %}{{ dot.Fragment }}{% else %}{{ message_uncached(dot) }}{% endif %}{% endmacro %}
+{% macro messages(dot) %}{% if dot.MessagesHTML %}{{ dot.MessagesHTML | safe }}{% else %}{% for item1 in dot.Messages %}{{ message(item1) }}{% endfor %}{% endif %}{% endmacro %}
+{% macro message(dot) %}{% if dot.Fragment %}{{ dot.Fragment | safe }}{% else %}{{ message_uncached(dot) }}{% endif %}{% endmacro %}
 {% macro message_uncached(dot) %}<div id="message_{{ dot.ClientID }}" class="message {% if dot.AllEmoji %}message--emoji{% endif %}" data-controller="reply" data-user-id="{{ dot.CreatorID }}" data-message-id="{{ dot.ID }}" data-message-timestamp="{{ epoch(dot.CreatedAt) }}" data-message-updated-at="{{ epoch(dot.UpdatedAt) }}" data-sort-value="{{ epoch(dot.CreatedAt) }}" data-messages-target="message" data-search-results-target="message" data-refresh-room-target="message" data-reply-composer-outlet="#composer">
 <h2 class="message__day-separator"><time datetime="{{ iso(dot.CreatedAt) }}" data-local-time-target="date"></time></h2>
 <figure class="avatar message__avatar"><a title="{{ dot.CreatorTitle }}" class="btn avatar" data-turbo-frame="_top" href="/users/{{ dot.CreatorID }}"><img aria-hidden="true" src="{{ avatar(dot.CreatorID,dot.CreatorUpdatedAt) }}" width="48" height="48"></a></figure>
