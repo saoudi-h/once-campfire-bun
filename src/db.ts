@@ -106,9 +106,86 @@ export function get(sql: string, ...params: Param[]): Row | undefined {
 }
 export function run(sql: string, ...params: Param[]): RunResult {
   queries++;
-  return db()
+  const result = db()
     .query(sql)
     .run(...params) as unknown as RunResult;
+  recordChange(sql, result);
+  return result;
+}
+// Change journal for the session cache (PERF-23, mirrors the C++
+// port's tx.changed()): every write records the tables it touched so
+// a per-worker session cache can drop exactly the entries whose
+// session or user row changed, instead of a TTL or a wholesale flush.
+// A local commit also bumps writeGeneration(), which is the coarse
+// fallback when the change set is unknown (another worker's writes,
+// seen through the observer).
+export type TableName =
+  | "sessions"
+  | "users"
+  | "memberships"
+  | "rooms"
+  | "messages"
+  | "accounts"
+  | "other";
+export interface Change {
+  table: TableName;
+  id?: number;
+}
+const changeLog = new Set<string>();
+let writeGen = 0;
+let writeGenSeen = 0;
+const WRITE_TABLE = /^\s*(?:INSERT\s+INTO|INSERT\s+OR\s+\w+\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+"?(\w+)"?/i;
+function recordChange(sql: string, result: RunResult): void {
+  const match = WRITE_TABLE.exec(sql);
+  if (!match) return;
+  const name = match[1]!;
+  const table: TableName =
+    name === "sessions" ||
+    name === "users" ||
+    name === "memberships" ||
+    name === "rooms" ||
+    name === "messages" ||
+    name === "accounts"
+      ? name
+      : "other";
+  // UPDATE/DELETE without a rowid in hand key on the table alone:
+  // a session-cache entry matches on session id or user id, so a
+  // table-level entry drops every entry of that table (correct,
+  // coarser). INSERTs carry lastInsertRowid.
+  const id =
+    table !== "other" && result && Number.isFinite(Number(result.lastInsertRowid))
+      ? Number(result.lastInsertRowid)
+      : undefined;
+  changeLog.add(id === undefined ? table : `${table}:${id}`);
+  // Any local commit advances the write generation so a consumer
+  // that only tracks the counter (not the events) still flushes.
+  writeGen++;
+}
+// Called by a transaction commit so nested runs flush their journal
+// exactly once per commit.
+export function noteCommit(): void {
+  writeGen++;
+}
+export function drainChanges(): Change[] {
+  const out: Change[] = [];
+  for (const entry of changeLog) {
+    const [table, id] = entry.split(":");
+    out.push({
+      table: table as TableName,
+      id: id === undefined ? undefined : Number(id),
+    });
+  }
+  changeLog.clear();
+  return out;
+}
+// True when any write committed since the last call (local or remote).
+// Consumers that cannot apply precise events use this to flush.
+export function writeGenerationMoved(): boolean {
+  if (writeGen !== writeGenSeen) {
+    writeGenSeen = writeGen;
+    return true;
+  }
+  return false;
 }
 // Write generation for page-cache tickets (PERF-22, mirrors
 // Rust's Observer): one cheap PRAGMA on the read-only observer

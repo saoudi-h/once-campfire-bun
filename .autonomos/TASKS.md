@@ -23,6 +23,7 @@
 - [x] **[PERF-16]** Thumbnail serving: measured obsolete (0.288ms vs 0.226ms on current code, sharpen removal already fixed it) `Priority: ⚪` `Complexity: S`
 - [x] **[HARNESS-02]** Official harness re-run after PERF-22 (fork flow; sidebar/search at Rust parity) `Priority: 🔵` `Complexity: M`
 - [x] **[HARNESS-03]** Official seed rebuild (bin/seed, VAPID fixed) + upstream PR (verification#5) + README table `Priority: 🔵` `Complexity: M`
+- [/] **[PERF-23]** Session cache with event-driven invalidation (C++ design ported to our writer IPC): biggest remaining hit-path win (~25% of app cost), revocation via change events not TTL `Priority: 🟠` `Complexity: M`
 
 ## ✅ Done
 

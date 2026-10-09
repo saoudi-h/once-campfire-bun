@@ -2,8 +2,153 @@
 // Only this file and cable.ts touch Elysia/WS primitives directly.
 import { randomBytes } from "node:crypto";
 import * as rails from "./rails.ts";
-import { get, run, now } from "./db.ts";
+import {
+  drainChanges,
+  get,
+  run,
+  now,
+  dataVersion,
+  type Change,
+} from "./db.ts";
 import { allowLogin } from "./rate_limit.ts";
+import { onWriterChanges } from "./write-client.ts";
+
+// Per-process session cache (PERF-23, mirrors the C++ port's
+// per-worker session cache): the cookie verification (HMAC) and the
+// two auth SELECTs are identical on every request of a session, so
+// the verified token -> {session, user} pair is memoized per raw
+// cookie value. Bounded, and dropped when the rows behind an entry
+// change:
+//   - local writes: db.ts records (table, id) per commit
+//   - the writer child broadcasts its changes over the write IPC
+//   - any write generation move without a precise event (another
+//     worker's commit) flushes the whole cache
+// The invalidation is event-driven, not a TTL, so a logout or a ban
+// lands on the next request instead of after a delay.
+const SESSION_CACHE_MAX = 4096;
+interface AuthEntry {
+  currentSession: any;
+  user: any;
+}
+const sessionCache = new Map<string, AuthEntry>();
+let cachedSessionIds = new Set<number>();
+let cachedUserIds = new Set<number>();
+function invalidateSessionCache(changes: Change[]): void {
+  let flushAccount = false;
+  for (const change of changes) {
+    if (change.table === "sessions" || change.table === "users") {
+      // Precise: drop the entries built from that row.
+      if (change.id !== undefined) {
+        if (change.table === "sessions") cachedSessionIds.delete(change.id);
+        else cachedUserIds.delete(change.id);
+      }
+      for (const [cookie, entry] of sessionCache) {
+        const hit =
+          change.id === undefined ||
+          (change.table === "sessions" &&
+            Number(entry.currentSession?.id) === change.id) ||
+          (change.table === "users" &&
+            Number(entry.user?.id) === change.id);
+        if (hit) {
+          cachedSessionIds.delete(Number(entry.currentSession?.id));
+          cachedUserIds.delete(Number(entry.user?.id));
+          sessionCache.delete(cookie);
+        }
+      }
+    }
+    if (change.table === "accounts") flushAccount = true;
+  }
+  if (flushAccount) accountCache = null;
+}
+function flushSessionCache(): void {
+  sessionCache.clear();
+  cachedSessionIds.clear();
+  cachedUserIds.clear();
+  accountCache = null;
+}
+// Local writes this process committed since the last maintenance.
+function applyLocalChanges(): void {
+  const changes = drainChanges();
+  if (changes.length > 0) invalidateSessionCache(changes);
+}
+// Cross-process commit detection: the read-only observer's
+// data_version moves when any other connection (another worker, the
+// writer child) commits. We cannot tell which table from it, so the
+// cache flushes wholesale. That is the safe direction: over-
+// invalidation, never a stale authenticated entry. The writer's
+// precise frames are the common case (message creates); this covers
+// the rest (rooms, memberships, avatar writes, other workers' local
+// writes).
+let lastObservedVersion: number | null = null;
+function observeRemoteWrites(): boolean {
+  const v = dataVersion();
+  if (v === null) return false;
+  if (lastObservedVersion === null) {
+    lastObservedVersion = v;
+    return false;
+  }
+  if (v !== lastObservedVersion) {
+    lastObservedVersion = v;
+    return true;
+  }
+  return false;
+}
+function maintainSessionCache(): void {
+  applyLocalChanges();
+  if (observeRemoteWrites()) flushSessionCache();
+}
+// The raw-cookie entry for the current request, after maintenance.
+// Returns the memoized user row without re-reading the database.
+function sessionCacheHit(header: string | undefined): AuthEntry | null {
+  const raw = safeCookie(header);
+  if (raw === null) return null;
+  return sessionCache.get(raw) ?? null;
+}
+function safeCookie(header: string | undefined): string | null {
+  try {
+    return parseCookies(header).session_token ?? null;
+  } catch {
+    return null;
+  }
+}
+// Account singleton: one row, read on every request, invalidated by
+// the same change events as the session cache.
+let accountCache: { row: any } | null = null;
+function cachedAccount(): any {
+  maintainSessionCache();
+  if (accountCache !== null) return accountCache.row;
+  const row = get("SELECT * FROM accounts ORDER BY id LIMIT 1") ?? null;
+  accountCache = { row };
+  return row;
+}
+// Writer-broadcast changes (message-create commits).
+onWriterChanges((changes) => {
+  invalidateSessionCache(changes as Change[]);
+});
+function lookupSession(rawCookie: string): AuthEntry | null {
+  maintainSessionCache();
+  const hit = sessionCache.get(rawCookie);
+  if (hit !== undefined) return hit;
+  const verified = rails.verifyCookie("session_token", rawCookie);
+  if (typeof verified !== "string") return null;
+  const currentSession = get(
+    "SELECT s.*,u.name,u.role,u.status FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND u.status=0",
+    verified,
+  );
+  if (!currentSession) return null;
+  // The auth JOIN is a projection; handlers expect the full users row
+  // (password_digest, updated_at, email_address, ...), so read it once
+  // at fill time and memoize it with the entry. A hit then costs no
+  // query at all; a miss costs the same two SELECTs as before.
+  const user = get("SELECT * FROM users WHERE id=?", currentSession.user_id);
+  if (!user) return null;
+  const entry: AuthEntry = { currentSession, user };
+  if (sessionCache.size >= SESSION_CACHE_MAX) flushSessionCache();
+  sessionCache.set(rawCookie, entry);
+  cachedSessionIds.add(Number(currentSession.id));
+  cachedUserIds.add(Number(user.id));
+  return entry;
+}
 
 export interface CompatFile {
   fieldname: string;
@@ -74,9 +219,11 @@ export function parseCookies(header = ""): Record<string, string> {
 
 export function authenticateCookies(header: string | undefined) {
   try {
-    const token = rails.verifyCookie("session_token", parseCookies(header).session_token ?? "") as string;
-    return get("SELECT s.*,u.name,u.role,u.status FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND u.status=0", token);
-  } catch { return null; }
+    const raw = parseCookies(header).session_token ?? "";
+    return lookupSession(raw)?.currentSession ?? null;
+  } catch {
+    return null;
+  }
 }
 
 const mimeFor: Record<string, string | undefined> = {
@@ -252,8 +399,11 @@ export function buildReq(ctx: BuildContext, rawBody: unknown, remoteAddr: string
   req.session._csrf_token ||= rails.b64(randomBytes(32));
   req.csrfToken = (req.session._csrf_token as string | undefined) ? rails.maskCsrf(rails.decode64(req.session._csrf_token as string)) : "";
   req.currentSession = authenticateCookies(headers.cookie);
-  req.user = req.currentSession ? get("SELECT * FROM users WHERE id=?", req.currentSession.user_id) : null;
-  req.account = get("SELECT * FROM accounts ORDER BY id LIMIT 1");
+  // Session cache hit carries the user row (the JOIN result) and the
+  // account singleton, so a hot request runs no auth SELECT at all.
+  const cached = sessionCacheHit(headers.cookie);
+  req.user = cached ? cached.user : null;
+  req.account = cachedAccount();
   req.authenticatedByBot = false;
   const botMatch = req.path.match(/^\/rooms\/\d+\/([^/]+)\/messages(?:\/|$)/);
   const botKey = (req.query.bot_key as string | undefined) || botMatch?.[1];

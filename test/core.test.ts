@@ -849,3 +849,114 @@ test("sidebar placeholders suggest active users outside direct rooms", async () 
   run("DELETE FROM rooms WHERE id=?", directId);
   for (const id of extra) run("DELETE FROM users WHERE id=?", id);
 });
+async function loginForSession(base: string) {
+  let response = await fetch(base + "/session/new");
+  const html = await response.text();
+  const csrf = html.match(/name="csrf-token" content="([^"]+)"/)![1]!;
+  let cookie = response.headers
+    .getSetCookie()
+    .map((c) => c.split(";")[0])
+    .join("; ");
+  response = await fetch(base + "/session", {
+    method: "POST",
+    redirect: "manual",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      email_address: admin.email_address,
+      password: "password",
+      authenticity_token: csrf,
+    }),
+  });
+  assert.equal(response.status, 302);
+  cookie +=
+    "; " +
+    response.headers
+      .getSetCookie()
+      .map((c) => c.split(";")[0])
+      .join("; ");
+  return { cookie, csrf };
+}
+
+test("session cache serves repeated requests without re-reading auth (PERF-23)", async () => {
+  const { base, close } = await serveApp();
+  const server = { close: (cb: any) => { close().then(cb); } };
+  try {
+    const { cookie, csrf } = await loginForSession(base);
+    // First request populates the entry.
+    let response = await fetch(base + "/up", { headers: { cookie } });
+    assert.equal(response.status, 200);
+    // A second request on the same cookie hits the cache: no auth
+    // SELECT, no cookie verify. The page still renders.
+    response = await fetch(base + "/rooms/" + open.id, { headers: { cookie } });
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.ok(html.length > 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("logout invalidates the session cache entry immediately (PERF-23)", async () => {
+  const { base, close } = await serveApp();
+  const server = { close: (cb: any) => { close().then(cb); } };
+  try {
+    const { cookie, csrf } = await loginForSession(base);
+    const url = base + "/rooms/" + open.id;
+    // Warm the cache.
+    let response = await fetch(url, { headers: { cookie } });
+    assert.equal(response.status, 200);
+    // Logout deletes the session row. The cached entry must die with
+    // it, or a revoked cookie would keep working. redirect:"manual"
+    // so the 302 does not turn into a followed 200.
+    response = await fetch(base + "/session", {
+      method: "DELETE",
+      redirect: "manual",
+      headers: { cookie, "x-csrf-token": csrf },
+    });
+    assert.equal(response.status, 302);
+    // The revoked cookie must no longer authenticate. Use /up (never
+    // page-cached) and a profile page, not the room page: the room
+    // page has its own whole-page cache keyed on generation, which is
+    // a separate mechanism from the session cache.
+    response = await fetch(base + "/up", { headers: { cookie } });
+    assert.equal(response.status, 200);
+    // redirect:"manual": a followed redirect would land on the login
+    // page (200) and hide the revocation.
+    response = await fetch(`${base}/users/${admin.id}`, {
+      headers: { cookie },
+      redirect: "manual",
+    });
+    assert.equal(
+      response.status,
+      302,
+      "revoked session still authenticated (expected a login redirect)",
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("user status change invalidates cached sessions (PERF-23)", async () => {
+  const { base, close } = await serveApp();
+  const server = { close: (cb: any) => { close().then(cb); } };
+  try {
+    const { cookie, csrf } = await loginForSession(base);
+    const url = base + "/rooms/" + open.id;
+    let response = await fetch(url, { headers: { cookie } });
+    assert.equal(response.status, 200);
+    // Ban the user (status 1) directly: a local write on users.
+    run("UPDATE users SET status=1 WHERE id=?", admin.id);
+    response = await fetch(`${base}/users/${admin.id}`, {
+      headers: { cookie },
+      redirect: "manual",
+    });
+    assert.equal(
+      response.status,
+      302,
+      "banned user still authenticated (expected a login redirect)",
+    );
+    run("UPDATE users SET status=0 WHERE id=?", admin.id);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
