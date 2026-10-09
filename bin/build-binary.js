@@ -4,8 +4,10 @@
 // every runtime data dir so the binary needs no source tree beside it.
 // Data layout is resolved by src/data.ts (EMBED_MAP — keep in sync).
 // Usage: bun bin/build-binary.js [outfile]
-// Note: --bytecode is off: the bundler's bytecode transform rejects the
-// top-level await in src/server.ts on this canary (revisit on newer builds).
+// BYTECODE=1 adds --bytecode (server.ts boot is wrapped in
+// main() so the entry has no top-level await). Measured zero
+// on this canary (boot 108->107ms, rps/RSS identical,
+// +5.4MB binary): opt-in only.
 // Not adopted for production (PERF-21): sharp's native binding fails to
 // load inside the binary and `--external sharp` can't resolve outside
 // $bunfs, so every sharp path (PNG/WebP/GIF/TIFF/AVIF variants) 500s.

@@ -6,122 +6,132 @@ import { setFanout } from "./cable.ts";
 import { connectWriter } from "./write-client.ts";
 import { initialize } from "./db.ts";
 
-// A `bun build --compile` binary runs this module as its entry in every
-// child, so the writer role can no longer be selected by spawning a
-// separate script path (writer.ts as argv[1]). Dispatch it from env:
-// the master already sets CAMPFIRE_WRITER when it spawns the child.
-if (process.env.CAMPFIRE_WRITER === "1") {
-  const { runWriterCli } = await import("./writer.ts");
-  runWriterCli();
-  // The unix-socket listener keeps the event loop alive; suspend the
-  // entry here so none of the server logic below runs in the writer child.
-  await new Promise(() => {});
-}
+// Boot runs inside main() so the entry has no top-level
+// await: `bun build --compile --bytecode` (BYTECODE=1 in
+// bin/build-binary.js) rejects top-level await in the
+// entry module. Behavior is identical interpreted.
+async function main() {
+  // A `bun build --compile` binary runs this module as its entry in every
+  // child, so the writer role can no longer be selected by spawning a
+  // separate script path (writer.ts as argv[1]). Dispatch it from env:
+  // the master already sets CAMPFIRE_WRITER when it spawns the child.
+  if (process.env.CAMPFIRE_WRITER === "1") {
+    const { runWriterCli } = await import("./writer.ts");
+    runWriterCli();
+    // The unix-socket listener keeps the event loop alive; suspend the
+    // entry here so none of the server logic below runs in the writer child.
+    await new Promise(() => {});
+  }
 
-const port = Number(process.env.HTTP_PORT || 8080);
-const bind = process.env.BIND || "0.0.0.0";
-const requested = Number(process.env.WEB_WORKERS || "1");
-const workers =
-  Number.isInteger(requested) && requested >= 1 && requested <= 64
-    ? requested
-    : 1;
-const isWorker = Boolean(process.env.CAMPFIRE_WORKER);
+  const port = Number(process.env.HTTP_PORT || 8080);
+  const bind = process.env.BIND || "0.0.0.0";
+  const requested = Number(process.env.WEB_WORKERS || "1");
+  const workers =
+    Number.isInteger(requested) && requested >= 1 && requested <= 64
+      ? requested
+      : 1;
+  const isWorker = Boolean(process.env.CAMPFIRE_WORKER);
 
-if (workers > 1 && !isWorker) {
-  // Master process: runs the job queue, mediates Action Cable
-  // fanout between workers, and supervises the HTTP workers.
-  // HTTP traffic is balanced by the kernel across workers
-  // sharing the port via SO_REUSEPORT.
-  let shuttingDown = false;
-  await startWorker();
-  // Create the app schema here, before any child starts. Compiled
-  // children boot instantly and would otherwise race a first-boot
-  // schema.sql run (one child sees a half-created database and the
-  // supervisor restarts it). Interpreted children never won this race;
-  // pinning it in the master keeps first boot deterministic everywhere.
-  initialize();
-  startCheckpointer();
-  startFanoutServer();
-  const children = new Set<Bun.Subprocess>();
-  const spawnWorker = () => {
-    if (shuttingDown) return;
-    const child = Bun.spawn([process.execPath, import.meta.path], {
-      env: { ...process.env, CAMPFIRE_WORKER: "1" },
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    children.add(child);
-    child.exited.then(() => {
-      children.delete(child);
-      if (!shuttingDown) {
-        console.error("Campfire HTTP worker exited; restarting");
-        spawnWorker();
-      }
-    });
-  };
-  for (let i = 0; i < workers; i++) spawnWorker();
-  // Dedicated SQLite writer (ADR-001): single process executing
-  // message-create transactions; HTTP workers await it instead of
-  // busy-sleeping on the writer lock.
-  let writer: Bun.Subprocess | null = null;
-  const spawnWriter = () => {
-    if (shuttingDown) return;
-    writer = Bun.spawn(
-      [process.execPath, new URL("./writer.ts", import.meta.url).pathname],
-      {
-        env: { ...process.env, CAMPFIRE_WRITER: "1" },
+  if (workers > 1 && !isWorker) {
+    // Master process: runs the job queue, mediates Action Cable
+    // fanout between workers, and supervises the HTTP workers.
+    // HTTP traffic is balanced by the kernel across workers
+    // sharing the port via SO_REUSEPORT.
+    let shuttingDown = false;
+    await startWorker();
+    // Create the app schema here, before any child starts. Compiled
+    // children boot instantly and would otherwise race a first-boot
+    // schema.sql run (one child sees a half-created database and the
+    // supervisor restarts it). Interpreted children never won this race;
+    // pinning it in the master keeps first boot deterministic everywhere.
+    initialize();
+    startCheckpointer();
+    startFanoutServer();
+    const children = new Set<Bun.Subprocess>();
+    const spawnWorker = () => {
+      if (shuttingDown) return;
+      const child = Bun.spawn([process.execPath, import.meta.path], {
+        env: { ...process.env, CAMPFIRE_WORKER: "1" },
         stdout: "inherit",
         stderr: "inherit",
-      },
+      });
+      children.add(child);
+      child.exited.then(() => {
+        children.delete(child);
+        if (!shuttingDown) {
+          console.error("Campfire HTTP worker exited; restarting");
+          spawnWorker();
+        }
+      });
+    };
+    for (let i = 0; i < workers; i++) spawnWorker();
+    // Dedicated SQLite writer (ADR-001): single process executing
+    // message-create transactions; HTTP workers await it instead of
+    // busy-sleeping on the writer lock.
+    let writer: Bun.Subprocess | null = null;
+    const spawnWriter = () => {
+      if (shuttingDown) return;
+      writer = Bun.spawn(
+        [process.execPath, new URL("./writer.ts", import.meta.url).pathname],
+        {
+          env: { ...process.env, CAMPFIRE_WRITER: "1" },
+          stdout: "inherit",
+          stderr: "inherit",
+        },
+      );
+      writer.exited.then(() => {
+        writer = null;
+        if (!shuttingDown) {
+          console.error("Campfire writer exited; restarting");
+          spawnWriter();
+        }
+      });
+    };
+    spawnWriter();
+    console.log(
+      `Campfire Bun master on ${port} with ${workers} workers`,
     );
-    writer.exited.then(() => {
-      writer = null;
-      if (!shuttingDown) {
-        console.error("Campfire writer exited; restarting");
-        spawnWriter();
+    const close = () => {
+      shuttingDown = true;
+      for (const child of children) child.kill();
+      try {
+        writer?.kill();
+      } catch {
+        // Already gone.
       }
-    });
-  };
-  spawnWriter();
-  console.log(
-    `Campfire Bun master on ${port} with ${workers} workers`,
-  );
-  const close = () => {
-    shuttingDown = true;
-    for (const child of children) child.kill();
-    try {
-      writer?.kill();
-    } catch {
-      // Already gone.
+      stopCheckpointer();
+      stopWorker().finally(() =>
+        setTimeout(() => process.exit(0), 100).unref(),
+      );
+    };
+    process.on("SIGTERM", close);
+    process.on("SIGINT", close);
+  } else {
+    // Single-process mode, or an HTTP worker spawned by the
+    // master. Workers share the listener port with SO_REUSEPORT.
+    // Only master-spawned workers use the dedicated writer (single
+    // mode has no lock contention, so it keeps local writes).
+    connectFanout();
+    if (isWorker) {
+      setFanout(fanout);
+      connectWriter();
     }
-    stopCheckpointer();
-    stopWorker().finally(() =>
-      setTimeout(() => process.exit(0), 100).unref(),
-    );
-  };
-  process.on("SIGTERM", close);
-  process.on("SIGINT", close);
-} else {
-  // Single-process mode, or an HTTP worker spawned by the
-  // master. Workers share the listener port with SO_REUSEPORT.
-  // Only master-spawned workers use the dedicated writer (single
-  // mode has no lock contention, so it keeps local writes).
-  connectFanout();
-  if (isWorker) {
-    setFanout(fanout);
-    connectWriter();
+    if (!isWorker) await startWorker();
+    startCheckpointer();
+    const app = createApp();
+    app.listen({ port, hostname: bind, reusePort: workers > 1 });
+    console.log(`Campfire Bun listening on ${port}`);
+    const close = async () => {
+      stopCheckpointer();
+      await stopWorker();
+      (app as any).stop?.();
+      setTimeout(() => process.exit(0), 1000).unref();
+    };
+    process.on("SIGTERM", close);
+    process.on("SIGINT", close);
   }
-  if (!isWorker) await startWorker();
-  startCheckpointer();
-  const app = createApp();
-  app.listen({ port, hostname: bind, reusePort: workers > 1 });
-  console.log(`Campfire Bun listening on ${port}`);
-  const close = async () => {
-    stopCheckpointer();
-    await stopWorker();
-    (app as any).stop?.();
-    setTimeout(() => process.exit(0), 1000).unref();
-  };
-  process.on("SIGTERM", close);
-  process.on("SIGINT", close);
 }
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
