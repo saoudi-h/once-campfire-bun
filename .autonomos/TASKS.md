@@ -20,6 +20,8 @@
 - [x] **[PORT-01]** Port Express 1fc0949 remainder: JSON-path redundant messageById + message_creation test gaps `Priority: 🔵` `Complexity: S`
 - [x] **[HARNESS-01]** Verification-harness assessment + contract compliance (19/19 preflight) `Priority: 🔵` `Complexity: M`
 - [x] **[PERF-22]** Rust Oct-7 response cache port: generation tickets (PRAGMA data_version observer), TTL, 3 routes `Priority: 🟠` `Complexity: L`
+- [x] **[PERF-16]** Thumbnail serving: measured obsolete (0.288ms vs 0.226ms on current code, sharpen removal already fixed it) `Priority: ⚪` `Complexity: S`
+- [x] **[HARNESS-02]** Official harness re-run after PERF-22 (fork flow; sidebar/search at Rust parity) `Priority: 🔵` `Complexity: M`
 
 ## ✅ Done
 
@@ -42,5 +44,5 @@
 
 ## 🔮 Backlog
 
-- [ ] **[HARNESS-02]** Fork adapter + timed benchmark + upstream PR decision (checklist in PORT-01 worklog) `Priority: 🔵` `Complexity: M`
+- [ ] **[HARNESS-03]** Upstream PR decision + seed rebuild with real bin/seed (VAPID pair) before official submission `Priority: 🔵` `Complexity: M`
 - [ ] **[PERF-16]** Thumbnail serving: direct file serve vs redirect chain (GET thumb 1.3ms vs 0.2ms) `Priority: ⚪` `Complexity: S`

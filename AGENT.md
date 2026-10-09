@@ -27,10 +27,18 @@ Rust; sidebar/post/cable remain (see `.autonomos/TASKS.md`).
   (strict, `noUncheckedIndexedAccess`) required before benching.
 - **Commits:** Conventional Commits (`perf(db): …`). Commit only when
   asked. Never commit secrets.
-- **Bench:** production image `campfire-bun:bench`, fresh seed copy per
-  app (`parity/.seed/default`), server CPUs `8-11`, loadgen CPUs
-  `12-15`, `--network host`, warmup `c=4/2s` then measure. Compare
-  ratios vs Rust on the same host, never absolute numbers across hosts.
+- **Bench:** official flow `../once-campfire-verification`
+  (`bench/compare.rb` via dockerized ruby `bench-ruby:1`):
+  build `once-campfire-elysia:app` first (symlink
+  `../once-campfire-elysia` → this repo), then run with
+  `--network host -u 1000:1000 --group-add 966` + docker
+  socket mount and `ELYSIA_BENCH_ENV={"WEB_WORKERS":"4"}`.
+  The old `../once-campfire-rust/bench/` flow still works for
+  quick local A/B; label numbers by harness. Compare ratios vs
+  Rust within the same run — this host swings ±15% between
+  runs (thermal/page-cache), never absolute numbers across
+  runs. The runner fails closed: a completed run means all
+  contracts + write audits passed.
 - **Language:** English for artifacts, French with the user.
 - **Protocol:** Autonomos (`.autonomos/PROTOCOL.md`). TASKS.md owns task
   state; worklog per session work; `/task` plan before code.
