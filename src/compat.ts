@@ -2,85 +2,37 @@
 // Only this file and cable.ts touch Elysia/WS primitives directly.
 import { randomBytes } from "node:crypto";
 import * as rails from "./rails.ts";
-import {
-  drainChanges,
-  get,
-  run,
-  now,
-  dataVersion,
-  type Change,
-} from "./db.ts";
+import { get, run, now, dataVersion, observerActive } from "./db.ts";
 import { allowLogin } from "./rate_limit.ts";
-import { onWriterChanges } from "./write-client.ts";
 
 // Per-process session cache (PERF-23, mirrors the C++ port's
 // per-worker session cache): the cookie verification (HMAC) and the
 // two auth SELECTs are identical on every request of a session, so
 // the verified token -> {session, user} pair is memoized per raw
-// cookie value. Bounded, and dropped when the rows behind an entry
-// change:
-//   - local writes: db.ts records (table, id) per commit
-//   - the writer child broadcasts its changes over the write IPC
-//   - any write generation move without a precise event (another
-//     worker's commit) flushes the whole cache
-// The invalidation is event-driven, not a TTL, so a logout or a ban
-// lands on the next request instead of after a delay.
+// cookie value. Bounded, and dropped whenever the database changes.
+//
+// Invalidation is a single cheap signal, not an event protocol: the
+// read-only observer connection (db.ts) is a DIFFERENT connection
+// from the writer, so its PRAGMA data_version moves on every commit
+// anywhere -- this process's local writes (logout, ban, session
+// touch), the writer child's message creates, and other workers'.
+// One probe per request decides "flush or serve". Over-invalidation
+// by design: never a stale authenticated entry. Measured: a local
+// write moves the observer (2 -> 3), so a logout or a ban lands on
+// the next request.
 const SESSION_CACHE_MAX = 4096;
 interface AuthEntry {
   currentSession: any;
   user: any;
 }
 const sessionCache = new Map<string, AuthEntry>();
-let cachedSessionIds = new Set<number>();
-let cachedUserIds = new Set<number>();
-function invalidateSessionCache(changes: Change[]): void {
-  let flushAccount = false;
-  for (const change of changes) {
-    if (change.table === "sessions" || change.table === "users") {
-      // Precise: drop the entries built from that row.
-      if (change.id !== undefined) {
-        if (change.table === "sessions") cachedSessionIds.delete(change.id);
-        else cachedUserIds.delete(change.id);
-      }
-      for (const [cookie, entry] of sessionCache) {
-        const hit =
-          change.id === undefined ||
-          (change.table === "sessions" &&
-            Number(entry.currentSession?.id) === change.id) ||
-          (change.table === "users" &&
-            Number(entry.user?.id) === change.id);
-        if (hit) {
-          cachedSessionIds.delete(Number(entry.currentSession?.id));
-          cachedUserIds.delete(Number(entry.user?.id));
-          sessionCache.delete(cookie);
-        }
-      }
-    }
-    if (change.table === "accounts") flushAccount = true;
-  }
-  if (flushAccount) accountCache = null;
-}
+let accountCache: { row: any } | null = null;
 function flushSessionCache(): void {
   sessionCache.clear();
-  cachedSessionIds.clear();
-  cachedUserIds.clear();
   accountCache = null;
 }
-// Local writes this process committed since the last maintenance.
-function applyLocalChanges(): void {
-  const changes = drainChanges();
-  if (changes.length > 0) invalidateSessionCache(changes);
-}
-// Cross-process commit detection: the read-only observer's
-// data_version moves when any other connection (another worker, the
-// writer child) commits. We cannot tell which table from it, so the
-// cache flushes wholesale. That is the safe direction: over-
-// invalidation, never a stale authenticated entry. The writer's
-// precise frames are the common case (message creates); this covers
-// the rest (rooms, memberships, avatar writes, other workers' local
-// writes).
 let lastObservedVersion: number | null = null;
-function observeRemoteWrites(): boolean {
+function observeWrites(): boolean {
   const v = dataVersion();
   if (v === null) return false;
   if (lastObservedVersion === null) {
@@ -93,42 +45,20 @@ function observeRemoteWrites(): boolean {
   }
   return false;
 }
-function maintainSessionCache(): void {
-  applyLocalChanges();
-  if (observeRemoteWrites()) flushSessionCache();
-}
-// The raw-cookie entry for the current request, after maintenance.
-// Returns the memoized user row without re-reading the database.
-function sessionCacheHit(header: string | undefined): AuthEntry | null {
-  const raw = safeCookie(header);
-  if (raw === null) return null;
-  return sessionCache.get(raw) ?? null;
-}
-function safeCookie(header: string | undefined): string | null {
-  try {
-    return parseCookies(header).session_token ?? null;
-  } catch {
-    return null;
-  }
-}
-// Account singleton: one row, read on every request, invalidated by
-// the same change events as the session cache.
-let accountCache: { row: any } | null = null;
+// The account singleton: one row, read on every request, flushed by
+// the same observer signal as the session cache. buildReq runs for
+// anonymous requests too, and lookupSession performs the maintenance
+// on every request, so one probe covers both caches.
 function cachedAccount(): any {
-  maintainSessionCache();
   if (accountCache !== null) return accountCache.row;
   const row = get("SELECT * FROM accounts ORDER BY id LIMIT 1") ?? null;
   accountCache = { row };
   return row;
 }
-// Writer-broadcast changes (message-create commits).
-onWriterChanges((changes) => {
-  invalidateSessionCache(changes as Change[]);
-});
-function lookupSession(rawCookie: string): AuthEntry | null {
-  maintainSessionCache();
-  const hit = sessionCache.get(rawCookie);
-  if (hit !== undefined) return hit;
+// Uncached path, used when no observer exists (":memory:"): the
+// session cache needs the observer's commit signal, so without one
+// every request authenticates from the database.
+function lookupSessionCold(rawCookie: string): AuthEntry | null {
   const verified = rails.verifyCookie("session_token", rawCookie);
   if (typeof verified !== "string") return null;
   const currentSession = get(
@@ -136,17 +66,20 @@ function lookupSession(rawCookie: string): AuthEntry | null {
     verified,
   );
   if (!currentSession) return null;
-  // The auth JOIN is a projection; handlers expect the full users row
-  // (password_digest, updated_at, email_address, ...), so read it once
-  // at fill time and memoize it with the entry. A hit then costs no
-  // query at all; a miss costs the same two SELECTs as before.
   const user = get("SELECT * FROM users WHERE id=?", currentSession.user_id);
-  if (!user) return null;
-  const entry: AuthEntry = { currentSession, user };
+  return user ? { currentSession, user } : null;
+}
+function lookupSession(rawCookie: string): AuthEntry | null {
+  // No observer (":memory:") means no commit signal: bypass the
+  // cache rather than risk serving a revoked session.
+  if (!observerActive()) return lookupSessionCold(rawCookie);
+  if (observeWrites()) flushSessionCache();
+  const hit = sessionCache.get(rawCookie);
+  if (hit !== undefined) return hit;
+  const entry = lookupSessionCold(rawCookie);
+  if (entry === null) return null;
   if (sessionCache.size >= SESSION_CACHE_MAX) flushSessionCache();
   sessionCache.set(rawCookie, entry);
-  cachedSessionIds.add(Number(currentSession.id));
-  cachedUserIds.add(Number(user.id));
   return entry;
 }
 
@@ -217,10 +150,15 @@ export function parseCookies(header = ""): Record<string, string> {
   return result;
 }
 
-export function authenticateCookies(header: string | undefined) {
+// One auth lookup per request: parses the cookie once, probes the
+// observer once, and returns the memoized session and user rows.
+// The result is null when the cookie is missing or its session no
+// longer authenticates.
+export function authFromCookies(
+  header: string | undefined,
+): { currentSession: any; user: any } | null {
   try {
-    const raw = parseCookies(header).session_token ?? "";
-    return lookupSession(raw)?.currentSession ?? null;
+    return lookupSession(parseCookies(header).session_token ?? "");
   } catch {
     return null;
   }
@@ -398,11 +336,11 @@ export function buildReq(ctx: BuildContext, rawBody: unknown, remoteAddr: string
   req.session.session_id ||= randomBytes(16).toString("hex");
   req.session._csrf_token ||= rails.b64(randomBytes(32));
   req.csrfToken = (req.session._csrf_token as string | undefined) ? rails.maskCsrf(rails.decode64(req.session._csrf_token as string)) : "";
-  req.currentSession = authenticateCookies(headers.cookie);
-  // Session cache hit carries the user row (the JOIN result) and the
-  // account singleton, so a hot request runs no auth SELECT at all.
-  const cached = sessionCacheHit(headers.cookie);
-  req.user = cached ? cached.user : null;
+  // One cache lookup serves the session and the user: on a hit the
+  // request runs no auth SELECT and no cookie verification.
+  const auth = authFromCookies(headers.cookie);
+  req.currentSession = auth ? auth.currentSession : null;
+  req.user = auth ? auth.user : null;
   req.account = cachedAccount();
   req.authenticatedByBot = false;
   const botMatch = req.path.match(/^\/rooms\/\d+\/([^/]+)\/messages(?:\/|$)/);

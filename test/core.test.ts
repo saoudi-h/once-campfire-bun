@@ -252,7 +252,10 @@ test("turbo poster reuses the broadcast fragment instead of rendering twice", as
     await new Promise((resolve) => server.close(resolve));
   }
 });
-async function login(base: string): Promise<{ cookie: string; csrf: string }> {
+async function login(
+  base: string,
+  email: string = admin.email_address,
+): Promise<{ cookie: string; csrf: string }> {
   let response = await fetch(base + "/session/new");
   const html = await response.text();
   const csrf = html.match(/name="csrf-token" content="([^"]+)"/)![1]!;
@@ -265,7 +268,7 @@ async function login(base: string): Promise<{ cookie: string; csrf: string }> {
     redirect: "manual",
     headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      email_address: admin.email_address,
+      email_address: email,
       password: "password",
       authenticity_token: csrf,
     }),
@@ -956,6 +959,54 @@ test("user status change invalidates cached sessions (PERF-23)", async () => {
       "banned user still authenticated (expected a login redirect)",
     );
     run("UPDATE users SET status=0 WHERE id=?", admin.id);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("a ban invalidates the right session even after other logins (PERF-23)", async () => {
+  const { base, close } = await serveApp();
+  const server = { close: (cb: any) => { close().then(cb); } };
+  try {
+    // A second user logs in first: its session INSERT is the last
+    // rowid on the connection, unrelated to admin's user id. A ban
+    // that recorded the connection's lastInsertRowid would target
+    // the wrong row and leave admin's cached session alive.
+    const digest = await domain.hashPassword("password");
+    const other = domain.createUser({
+      name: "Other",
+      email_address: "other-perf23@example.test",
+      password_digest: digest,
+      role: 1,
+    })!;
+    const { cookie } = await login(base, "other-perf23@example.test");
+    // Warm admin's entry too.
+    const { cookie: adminCookie } = await login(base);
+    assert.equal(
+      (await fetch(`${base}/users/${admin.id}`, { headers: { cookie: adminCookie } }))
+        .status,
+      200,
+    );
+    // Ban admin: UPDATE users WHERE id=<admin.id>.
+    run("UPDATE users SET status=1 WHERE id=?", admin.id);
+    const response = await fetch(`${base}/users/${admin.id}`, {
+      headers: { cookie: adminCookie },
+      redirect: "manual",
+    });
+    assert.equal(
+      response.status,
+      302,
+      "banned user stayed authenticated after an unrelated login",
+    );
+    // The other user is unaffected: the coarse table-level entry
+    // may drop their cache, but their session still authenticates.
+    const still = await fetch(`${base}/users/${other.id}`, {
+      headers: { cookie },
+    });
+    assert.equal(still.status, 200);
+    run("UPDATE users SET status=0 WHERE id=?", admin.id);
+    run("DELETE FROM sessions WHERE user_id=?", other.id);
+    run("DELETE FROM users WHERE id=?", other.id);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

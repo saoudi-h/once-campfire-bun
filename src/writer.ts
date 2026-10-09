@@ -5,15 +5,10 @@
 // newline-delimited JSON over a unix socket (same framing as
 // fanout.ts): {id, op, ...params} -> {id, ok, row?} or
 // {id, ok:false, status, message}.
-// After a commit the writer also broadcasts a change frame
-// {op:"changes", changes:[...]} to every connected worker so each
-// worker can invalidate its session cache (PERF-23): the frame is
-// advisory, workers that miss it still flush on their write
-// generation counter.
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
-import { initialize, drainChanges } from "./db.ts";
+import { initialize } from "./db.ts";
 import { insertMessage } from "./domain.ts";
 
 export function writerSocketPath(): string {
@@ -49,7 +44,6 @@ function handleLine(socket: Bun.Socket, line: string) {
         req.clientId ?? randomUUID(),
       );
       respond(socket, req.id, { ok: true, row });
-      broadcastChanges();
     } else {
       respond(socket, req.id, {
         ok: false,
@@ -63,22 +57,6 @@ function handleLine(socket: Bun.Socket, line: string) {
       status: Number(error?.status) || 500,
       message: String(error?.message || "writer error"),
     });
-  }
-}
-
-// Connected worker sockets, for the change broadcast. Sockets leave
-// the set on close/error, so a dead worker never accumulates.
-const peers = new Set<Bun.Socket>();
-function broadcastChanges(): void {
-  const changes = drainChanges();
-  if (changes.length === 0) return;
-  const frame = JSON.stringify({ op: "changes", changes }) + "\n";
-  for (const peer of peers) {
-    try {
-      peer.write(frame);
-    } catch {
-      // Peer gone; it will flush on its own generation counter.
-    }
   }
 }
 
@@ -100,9 +78,7 @@ export function runWriterCli() {
   Bun.listen({
     unix: file,
     socket: {
-      open: (socket: Bun.Socket) => {
-        peers.add(socket);
-      },
+      open: () => {},
       data: (socket: Bun.Socket, data: Buffer) => {
         const peer = socket as Bun.Socket & { writerBuf?: string };
         peer.writerBuf = (peer.writerBuf || "") + data.toString("utf8");
@@ -114,12 +90,8 @@ export function runWriterCli() {
           if (line) handleLine(socket, line);
         }
       },
-      close: (socket: Bun.Socket) => {
-        peers.delete(socket);
-      },
-      error: (socket: Bun.Socket) => {
-        peers.delete(socket);
-      },
+      close: () => {},
+      error: () => {},
     },
   });
   console.log("Campfire writer listening");

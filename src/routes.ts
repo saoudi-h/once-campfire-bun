@@ -1136,6 +1136,19 @@ function registerUsers(app: RouteCollector) {
       Subject: userData(user),
       CanAdminister: req.user.role === 1,
       AvatarURL: avatar(user.id, user.updated_at),
+      // Admins viewing another member get the session-transfer link
+      // (Rails: users/profiles/_transfer via session_transfer_url).
+      // The template only renders it in that case, but the macro
+      // crashes on an undefined value, so build it unconditionally.
+      Transfer:
+        origin(req) +
+        "/session/transfers/" +
+        rails.signedId(
+          "User",
+          user.id,
+          "transfer",
+          new Date(Date.now() + 4 * 3600000).toISOString(),
+        ),
     });
   });
   app.all("/users/:userId/ban", login, admin, (req, res) => {

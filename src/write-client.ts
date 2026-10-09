@@ -3,11 +3,6 @@
 // the event loop, unlike busy-sleeping on the SQLite writer lock.
 // When no writer is reachable (tests, direct createApp use) the
 // channel stays down and callers fall back to local writes.
-//
-// The writer also broadcasts change frames ({op:"changes", ...})
-// after each commit (PERF-23): they drive the session cache
-// invalidation. The channel ignores anything that is not a
-// response or a change frame.
 import { writerSocketPath } from "./writer.ts";
 import type { Row } from "./db.ts";
 
@@ -19,16 +14,6 @@ const pending = new Map<
   { resolve: (row: Row) => void; reject: (error: unknown) => void }
 >();
 let recvBuf = "";
-// Session-cache invalidation hook (set by compat.ts): receives the
-// writer's change frames. Kept as a plain callback so db.ts and the
-// cache stay free of socket knowledge.
-let changeListener: ((changes: Array<{ table: string; id?: number }>) => void) | null =
-  null;
-export function onWriterChanges(
-  listener: (changes: Array<{ table: string; id?: number }>) => void,
-): void {
-  changeListener = listener;
-}
 
 function writerDown(error: unknown) {
   channel = null;
@@ -61,12 +46,6 @@ async function connect(): Promise<void> {
             if (!line) continue;
             try {
               const res = JSON.parse(line);
-              if (res && res.op === "changes") {
-                // Advisory change frame: drive the session cache.
-                if (changeListener && Array.isArray(res.changes))
-                  changeListener(res.changes);
-                continue;
-              }
               const slot = pending.get(Number(res.id));
               if (!slot) continue;
               pending.delete(Number(res.id));
