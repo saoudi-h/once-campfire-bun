@@ -19,6 +19,7 @@
 - [x] **[PERF-21]** Image fallback matrix (Bun.Image vs sharp per format) + compile-flag stacking + canary adoption `Priority: 🟠` `Complexity: L`
 - [x] **[PORT-01]** Port Express 1fc0949 remainder: JSON-path redundant messageById + message_creation test gaps `Priority: 🔵` `Complexity: S`
 - [x] **[HARNESS-01]** Verification-harness assessment + contract compliance (19/19 preflight) `Priority: 🔵` `Complexity: M`
+- [x] **[PERF-22]** Rust Oct-7 response cache port: generation tickets (PRAGMA data_version observer), TTL, 3 routes `Priority: 🟠` `Complexity: L`
 
 ## ✅ Done
 
@@ -41,6 +42,5 @@
 
 ## 🔮 Backlog
 
-- [/] **[PERF-22]** Study Rust Oct-7 response cache, adapt authenticated whole-response caching `Priority: 🟠` `Complexity: L`
 - [ ] **[HARNESS-02]** Fork adapter + timed benchmark + upstream PR decision (checklist in PORT-01 worklog) `Priority: 🔵` `Complexity: M`
 - [ ] **[PERF-16]** Thumbnail serving: direct file serve vs redirect chain (GET thumb 1.3ms vs 0.2ms) `Priority: ⚪` `Complexity: S`

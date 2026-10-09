@@ -43,9 +43,12 @@ Rust; sidebar/post/cable remain (see `.autonomos/TASKS.md`).
   unix-socket cable fanout (`src/fanout.ts`).
 - **Patterns:** Express-style `CompatReq/CompatRes` facade over Elysia
   (`src/compat.ts`); Rails cookie/crypto compat (`src/rails.ts`);
-  version-keyed LRU caches, each 32MB like Rails MemoryStore:
-  message fragments + page cache (`src/rendering.ts`), gzip responses
-  (`src/app.ts`).
+  LRU caches, each 32MB like Rails MemoryStore: message
+  fragments (per-message version keys) + page cache
+  (generation tickets: key = [PRAGMA data_version generation
+  observed on a separate read-only connection, ...non-DB inputs]
+  — any commit anywhere invalidates all entries; 15s TTL) in
+  `src/rendering.ts`, gzip responses (`src/app.ts`).
 - **SQLite:** WAL + NORMAL + `wal_autocheckpoint=0` (main + jobs DBs);
   background `Bun.Worker` does PASSIVE past 1000 WAL pages, RESTART
   past 10000 (`src/checkpoint*.ts`, started by `src/server.ts` only —

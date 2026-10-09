@@ -27,6 +27,8 @@ import {
   messagesHtml,
   readPage,
   writePage,
+  pageTicket,
+  admitPage,
   roomData,
   userData,
   avatar,
@@ -394,39 +396,32 @@ export function registerRoutes(app: RouteCollector) {
       if (!room) return res.redirect("/");
       req.lastRoom = room.id;
       req.session.last_room_id = room.id;
+      // Generation ticket (PERF-22, mirrors Rust's response
+      // cache): any DB commit moves the generation, so the
+      // version SELECTs (room/user/membership/account rows,
+      // logo presence) are dropped from the key AND from the
+      // pre-lookup path. Only non-DB inputs split keys;
+      // auth/authz above always ran, like Rust's fresh auth.
+      const ticket = pageTicket(
+        [
+          origin(req),
+          String(room.id),
+          req.params.messageId || "",
+          String(req.user.id),
+          String(req.session._csrf_token || ""),
+          req.get("Turbo-Frame") || "",
+        ],
+        (req as any).generation,
+      );
+      const cached =
+        ticket !== null ? readPage(ticket.key) : undefined;
+      if (cached !== undefined) return res.type("html").send(cached);
+      // Display-only fetch, after the lookup (was key-building before).
       const membership = get(
         "SELECT involvement,updated_at FROM memberships WHERE room_id=? AND user_id=?",
         room.id,
         req.user.id,
       );
-      // Whole-page fast path: every input that can change the room
-      // page is versioned here (room/user/account rows, account logo
-      // presence, host, paging anchor, Turbo-Frame, per-session CSRF
-      // secret). The sidebar loads lazily via its own request, so it
-      // is not part of this page. On a hit every query below and the
-      // nunjucks render are skipped.
-      // NOTE: key on the stable session secret, not req.csrfToken:
-      // maskCsrf re-pads randomly per request (all masks stay valid).
-      const account = get("SELECT id,updated_at FROM accounts LIMIT 1");
-      const key = [
-        origin(req),
-        room.id,
-        room.updated_at,
-        req.params.messageId || "",
-        req.user.id,
-        req.user.updated_at,
-        membership?.updated_at,
-        membership?.involvement,
-        account?.updated_at,
-        get(
-          "SELECT id FROM active_storage_attachments WHERE record_type='Account' AND record_id=? AND name='logo'",
-          account?.id,
-        ) ? 1 : 0,
-        String(req.session._csrf_token || ""),
-        req.get("Turbo-Frame") || "",
-      ].join("|");
-      const cached = readPage(key);
-      if (cached !== undefined) return res.type("html").send(cached);
       const roomMessages = messageData(
         messagesForRoom(room.id, { around: req.params.messageId }),
         origin(req),
@@ -440,7 +435,7 @@ export function registerRoutes(app: RouteCollector) {
         Involvement: membership!.involvement,
         Invitation: false,
       });
-      writePage(key, html);
+      if (ticket !== null) admitPage(ticket, html);
       res.type("html").send(html);
     },
   );
@@ -451,40 +446,21 @@ export function registerRoutes(app: RouteCollector) {
     res.redirect("/");
   });
   app.get(["/users/me/sidebar", "/users/:id/sidebar"], login, (req, res) => {
-    // Sidebar fast path: every input that can change the fragment is
-    // versioned (room id set, room/membership/member versions, account
-    // version, placeholder users). The fragment carries no per-session
-    // content, so it is shared across sessions; a plain GET (no
-    // Turbo-Frame) renders the full Rails-equivalent page instead.
+    // Generation ticket (PERF-22): the room/membership/member/
+    // account version SELECTs are dropped from the key AND from
+    // the pre-lookup path (the nested direct-user query was the
+    // fattest). Sharing model unchanged: no per-session content,
+    // shared across sessions like before.
     const framed = (req.get("Turbo-Frame") || "") !== "";
-    const memberRooms = all(
-      "SELECT room_id FROM memberships WHERE user_id=?",
-      req.user.id,
-    ).map((r) => r.room_id);
-    const versions = get(
-      "SELECT MAX(r.updated_at) AS rooms, MAX(m.updated_at) AS memberships FROM memberships m JOIN rooms r ON r.id=m.room_id WHERE m.user_id=?",
-      req.user.id,
+    const ticket = pageTicket(
+      [framed ? "frame" : "page", String(req.user.id)],
+      (req as any).generation,
     );
-    const memberVersions = get(
-      "SELECT MAX(u.updated_at) AS users FROM users u WHERE u.id IN (SELECT m2.user_id FROM memberships m2 WHERE m2.room_id IN (SELECT m.room_id FROM memberships m JOIN rooms r ON r.id=m.room_id WHERE m.user_id=? AND r.type='Rooms::Direct'))",
-      req.user.id,
-    );
-    const sidebarAccount = get("SELECT updated_at FROM accounts LIMIT 1");
-    const placeholders = placeholderUsers(req.user.id);
-    const sidebarKey = [
-      framed ? "frame" : "page",
-      req.user.id,
-      req.user.updated_at,
-      [...memberRooms].sort((a, b) => a - b).join(","),
-      versions?.rooms,
-      versions?.memberships,
-      memberVersions?.users,
-      sidebarAccount?.updated_at,
-      placeholders.map((u) => `${u.id}-${u.updated_at}`).join(","),
-    ].join("|");
-    const cachedSidebar = readPage(sidebarKey);
+    const cachedSidebar =
+      ticket !== null ? readPage(ticket.key) : undefined;
     if (cachedSidebar !== undefined)
       return res.type("html").send(cachedSidebar);
+    const placeholders = placeholderUsers(req.user.id);
     const rooms = roomsForUser(req.user.id).filter(
       (r) => r.involvement !== "invisible",
     );
@@ -504,7 +480,7 @@ export function registerRoutes(app: RouteCollector) {
       })),
       Placeholders: placeholders.map(userData),
     });
-    writePage(sidebarKey, sidebarHtml);
+    if (ticket !== null) admitPage(ticket, sidebarHtml);
     res.type("html").send(sidebarHtml);
   });
   app.all(
@@ -1429,11 +1405,28 @@ function registerSearch(app: RouteCollector) {
       }
       return res.redirect("/searches?" + new URLSearchParams({ q: query }));
     }
-    // Search fast path: the FTS id query is cheap, everything after
-    // it (message fetches, render, gzip) is cached keyed on the
-    // query, the matched message versions, the recent-search state
-    // and the usual page versions. The search page links back to the
-    // last room, so the session's last_room_id is part of the key.
+    // Generation ticket (PERF-22): the FTS query, message
+    // fetches, recent-search state and every version SELECT
+    // move after the lookup; the generation covers all
+    // DB-backed inputs (matched messages, recent searches,
+    // account, logo). The search page links back to the last
+    // room, so the session's last_room_id stays in the key.
+    const ticket = pageTicket(
+      [
+        req.path,
+        origin(req),
+        String(req.user.id),
+        query,
+        req.session.last_room_id || "",
+        String(req.session._csrf_token || ""),
+        req.get("Turbo-Frame") || "",
+      ],
+      (req as any).generation,
+    );
+    const cachedSearch =
+      ticket !== null ? readPage(ticket.key) : undefined;
+    if (cachedSearch !== undefined)
+      return res.type("html").send(cachedSearch);
     const matchIds: number[] = query
       ? all(
           "SELECT m.id FROM messages m JOIN message_search_index idx ON idx.rowid=m.id JOIN memberships ms ON ms.room_id=m.room_id WHERE ms.user_id=? AND idx.body MATCH ? ORDER BY m.id DESC LIMIT 100",
@@ -1447,27 +1440,6 @@ function registerSearch(app: RouteCollector) {
     // Display oldest first like the reference (contract: id DESC reversed).
     // created_at ordering diverges under seed clock games; id is stable.
     const rows: Row[] = messagesByIds(matchIds).sort((a, b) => a.id - b.id);
-    const searchAccount = get("SELECT id,updated_at FROM accounts LIMIT 1");
-    const searchKey = [
-      req.path,
-      origin(req),
-      req.user.id,
-      req.user.updated_at,
-      query,
-      get("SELECT MAX(updated_at) AS max FROM searches WHERE user_id=?", req.user.id)?.max || "",
-      rows.map((m) => `${m.id}-${m.updated_at}`).join(","),
-      searchAccount?.updated_at,
-      get(
-        "SELECT id FROM active_storage_attachments WHERE record_type='Account' AND record_id=? AND name='logo'",
-        searchAccount?.id,
-      ) ? 1 : 0,
-      req.session.last_room_id || "",
-      String(req.session._csrf_token || ""),
-      req.get("Turbo-Frame") || "",
-    ].join("|");
-    const cachedSearch = readPage(searchKey);
-    if (cachedSearch !== undefined)
-      return res.type("html").send(cachedSearch);
     const searchMessages = messageData(rows);
     const searchHtml = render(req, "search", {
       Messages: searchMessages,
@@ -1478,7 +1450,7 @@ function registerSearch(app: RouteCollector) {
         req.user.id,
       ).map((s) => s.query),
     });
-    writePage(searchKey, searchHtml);
+    if (ticket !== null) admitPage(ticket, searchHtml);
     res.type("html").send(searchHtml);
   });
 }

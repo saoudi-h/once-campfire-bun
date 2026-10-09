@@ -14,7 +14,8 @@ const domain = await import("../src/domain.ts");
 const { plainText, sanitize, mentionIds } = await import("../src/richtext.ts");
 const rails = await import("../src/rails.ts");
 const { serveApp } = await import("./helper.ts");
-const { fragment, render, messageFragment } = await import("../src/rendering.ts");
+const { fragment, render, messageFragment, pageCacheStats, pageCacheClear } =
+  await import("../src/rendering.ts");
 let admin: Row, member: Row, outsider: Row, open: Row, privateRoom: Row;
 before(async () => {
   initialize();
@@ -247,6 +248,126 @@ test("turbo poster reuses the broadcast fragment instead of rendering twice", as
       messageFragment(messageData([domain.messageById(posted.id)!])[0]!),
     );
     assert.ok(body.includes(`<template>${expected}</template>`));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+async function login(base: string): Promise<{ cookie: string; csrf: string }> {
+  let response = await fetch(base + "/session/new");
+  const html = await response.text();
+  const csrf = html.match(/name="csrf-token" content="([^"]+)"/)![1]!;
+  let cookie = response.headers
+    .getSetCookie()
+    .map((c) => c.split(";")[0])
+    .join("; ");
+  response = await fetch(base + "/session", {
+    method: "POST",
+    redirect: "manual",
+    headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      email_address: admin.email_address,
+      password: "password",
+      authenticity_token: csrf,
+    }),
+  });
+  assert.equal(response.status, 302);
+  cookie +=
+    "; " +
+    response.headers
+      .getSetCookie()
+      .map((c) => c.split(";")[0])
+      .join("; ");
+  return { cookie, csrf };
+}
+test("page cache serves fresh content after a same-process write (PERF-22)", async () => {
+  const { base, close } = await serveApp();
+  const server = { close: (cb: any) => { close().then(cb); } };
+  try {
+    const { cookie, csrf } = await login(base);
+    let response = await fetch(base + "/rooms/" + open.id, {
+      headers: { cookie },
+    });
+    let html = await response.text();
+    assert.equal(response.status, 200, html);
+    assert.ok(!html.includes("invalidation-probe"));
+    // Tests run single-process (local writes, no writer child):
+    // the read-only observer connection must still see the commit
+    // and move the generation, or every page serves stale content.
+    response = await fetch(base + "/rooms/" + open.id + "/messages", {
+      method: "POST",
+      headers: {
+        cookie,
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "text/vnd.turbo-stream.html, text/html",
+      },
+      body: new URLSearchParams({
+        "message[body]": "invalidation-probe",
+        authenticity_token: csrf,
+      }),
+    });
+    assert.equal(response.status, 200);
+    response = await fetch(base + "/rooms/" + open.id, {
+      headers: { cookie },
+    });
+    html = await response.text();
+    assert.ok(
+      html.includes("invalidation-probe"),
+      "stale page served after a local write",
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+test("page cache hits skip the render and re-render under a new generation (PERF-22)", async () => {
+  const { base, close } = await serveApp();
+  const server = { close: (cb: any) => { close().then(cb); } };
+  try {
+    const { cookie, csrf } = await login(base);
+    pageCacheClear();
+    const url = base + "/rooms/" + open.id;
+    await (await fetch(url, { headers: { cookie } })).text();
+    assert.equal(pageCacheStats().entries, 1);
+    // Second GET is a cache hit: no new entry, no re-render.
+    await (await fetch(url, { headers: { cookie } })).text();
+    assert.equal(pageCacheStats().entries, 1);
+    // A write moves the generation: the next GET re-renders and
+    // files under the new generation key.
+    await fetch(base + "/rooms/" + open.id + "/messages", {
+      method: "POST",
+      headers: {
+        cookie,
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "text/vnd.turbo-stream.html, text/html",
+      },
+      body: new URLSearchParams({
+        "message[body]": "generation-probe",
+        authenticity_token: csrf,
+      }),
+    });
+    const html = await (await fetch(url, { headers: { cookie } })).text();
+    assert.ok(html.includes("generation-probe"));
+    assert.equal(pageCacheStats().entries, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+test("search page cache invalidates on new matching messages (PERF-22)", async () => {
+  const { base, close } = await serveApp();
+  const server = { close: (cb: any) => { close().then(cb); } };
+  try {
+    const { cookie } = await login(base);
+    domain.createMessage(open.id, admin.id, "unique-token alpha");
+    const url = base + "/searches?q=unique-token";
+    let html = await (await fetch(url, { headers: { cookie } })).text();
+    assert.ok(html.includes("alpha"));
+    assert.ok(!html.includes("beta"));
+    // A new matching message (same-process write) must invalidate.
+    domain.createMessage(open.id, admin.id, "unique-token beta");
+    html = await (await fetch(url, { headers: { cookie } })).text();
+    assert.ok(
+      html.includes("beta"),
+      "stale search page served after a local write",
+    );
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

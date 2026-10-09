@@ -12,6 +12,15 @@ export type RunResult = { changes: number | bigint | undefined; lastInsertRowid:
 Database.MAX_QUERY_CACHE_SIZE = 256;
 
 let connection: Database | undefined;
+// Page-cache generation observer (PERF-22, mirrors Rust's
+// response_cache Observer): PRAGMA data_version only advances
+// when the database file changes as seen by ANOTHER connection
+// — the write connection never observes its own commits. This
+// separate read-only connection sees every commit: local writes
+// (same process, other connection), the writer child and
+// sibling workers (cross-process). Read-only, so it never
+// contends with the single write connection.
+let observer: Database | undefined;
 let depth = 0;
 const callbacks: Array<Array<() => void>> = [];
 export function onCommit(fn: () => void) {
@@ -56,6 +65,17 @@ export function initialize(
     'CREATE INDEX IF NOT EXISTS "index_messages_on_room_id_and_created_at" ON "messages" ("room_id", "created_at")',
   );
   connection.exec("PRAGMA journal_mode=WAL;");
+  // Opened after WAL is set: a read-only connection joins the
+  // existing WAL (the -shm wal-index must exist). An observer
+  // failure disables the page cache (bypass, never stale) —
+  // same policy as Rust's observer error path.
+  if (path !== ":memory:") {
+    try {
+      observer = new Database(path, { readonly: true });
+    } catch {
+      observer = undefined;
+    }
+  }
   return connection;
 }
 export function db(): Database {
@@ -89,6 +109,37 @@ export function run(sql: string, ...params: Param[]): RunResult {
   return db()
     .query(sql)
     .run(...params) as unknown as RunResult;
+}
+// Write generation for page-cache tickets (PERF-22, mirrors
+// Rust's Observer): one cheap PRAGMA on the read-only observer
+// replaces the multi-SELECT version discovery on cache hits.
+// Equality-compare is wrap-safe (samples are microseconds apart;
+// 2^32 commits cannot land between two). Per-process sequence:
+// page keys live in per-process Maps, so generations only need
+// process-local consistency. Uncounted like the init pragmas
+// (infrastructure, not table queries).
+let lastDataVersion: number | null = null;
+let generation = 0;
+export function dataVersion(): number | null {
+  if (!observer) return null;
+  try {
+    const row = observer
+      .query("PRAGMA data_version")
+      .get() as { data_version?: unknown } | null;
+    return typeof row?.data_version === "number" ? row.data_version : null;
+  } catch {
+    return null;
+  }
+}
+export function pageGeneration(): number | null {
+  const v = dataVersion();
+  if (v === null) return null;
+  if (lastDataVersion === null) lastDataVersion = v;
+  else if (v !== lastDataVersion) {
+    generation++;
+    lastDataVersion = v;
+  }
+  return generation;
 }
 export function now() {
   return new Date(process.env.CAMPFIRE_FROZEN_TIME || Date.now())

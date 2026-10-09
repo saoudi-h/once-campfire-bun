@@ -1,6 +1,6 @@
 import nunjucks from "nunjucks";
 import { readFileSync, existsSync } from "node:fs";
-import { all, get, type Row } from "./db.ts";
+import { all, get, pageGeneration, type Row } from "./db.ts";
 import * as rails from "./rails.ts";
 import { escape, plainText, renderBody } from "./richtext.ts";
 import { blobUrl, representationUrl } from "./storage.ts";
@@ -147,14 +147,22 @@ export function writeMessageFragment(id: unknown, updatedAt: unknown, html: stri
     if (victim) fragmentBytes -= victim.bytes;
   }
 }
-// Whole-page cache (Rust "cache every part of a page" port): the room
-// show and messages-list HTML only change when the underlying rows
-// change, but render() re-runs nunjucks over ~500KB on every request.
-// Callers build a key from every input that can change the output
-// (room/user/account versions, host, paging anchor, per-session CSRF
-// token) and skip the render on a hit. Bounded LRU (see cacheLimitMb).
+// Whole-page cache (Rust response_cache port, PERF-22): the
+// room show, sidebar and search HTML only change when the
+// underlying rows change, but render() re-runs nunjucks over
+// ~500KB on every request. Callers build a generation ticket
+// (see pageTicket): the key is [generation, ...non-DB inputs],
+// so any DB commit — anywhere, from any connection or process —
+// makes every entry unreachable at once, and the version
+// SELECTs disappear from the hit path. Bounded LRU (see
+// cacheLimitMb) with a TTL: time-dependent links and dates
+// ("2 minutes ago") expire even without a database commit.
 const PAGE_MAX_BYTES = cacheLimitMb("CAMPFIRE_PAGE_CACHE_MB", 32);
-const pageStore = new Map<string, { html: string; bytes: number }>();
+const PAGE_TTL_MS = 15_000;
+const pageStore = new Map<
+  string,
+  { html: string; bytes: number; expiresAt: number }
+>();
 let pageBytes = 0;
 export function pageCacheStats() {
   return { entries: pageStore.size, bytes: pageBytes };
@@ -166,6 +174,11 @@ export function pageCacheClear() {
 export function readPage(key: string): string | undefined {
   const hit = pageStore.get(key);
   if (hit === undefined) return undefined;
+  if (hit.expiresAt < Date.now()) {
+    pageStore.delete(key);
+    pageBytes -= hit.bytes;
+    return undefined;
+  }
   // LRU touch: re-insert so eviction drops least-recently-used first.
   pageStore.delete(key);
   pageStore.set(key, hit);
@@ -179,7 +192,11 @@ export function writePage(key: string, html: string): void {
     pageBytes -= old.bytes;
     pageStore.delete(key);
   }
-  pageStore.set(key, { html, bytes });
+  pageStore.set(key, {
+    html,
+    bytes,
+    expiresAt: Date.now() + PAGE_TTL_MS,
+  });
   pageBytes += bytes;
   while (pageBytes > PAGE_MAX_BYTES && pageStore.size > 0) {
     const oldest = pageStore.keys().next();
@@ -188,6 +205,35 @@ export function writePage(key: string, html: string): void {
     pageStore.delete(oldest.value);
     if (victim) pageBytes -= victim.bytes;
   }
+}
+// Generation-guarded page tickets (PERF-22, mirrors Rust's
+// Ticket): key = [generation, ...non-DB inputs]. Any DB commit
+// bumps the generation (observed on the read-only observer
+// connection), so version SELECTs (row timestamps, logo
+// presence) are dropped from key construction AND from the
+// pre-lookup path. Non-DB inputs (route, query, ids, session
+// secret, turbo-frame, origin, anchors) stay: same-generation
+// differences must still split keys. Auth/authz queries always
+// run; keys carry user + session secret so entries never cross
+// principals.
+export interface PageTicket {
+  key: string;
+  generation: number;
+}
+export function pageTicket(
+  parts: string[],
+  generation?: number | null,
+): PageTicket | null {
+  const gen = generation ?? pageGeneration();
+  if (gen === null || gen === undefined) return null;
+  return { key: gen + "|" + parts.join("|"), generation: gen };
+}
+export function admitPage(ticket: PageTicket, html: string): void {
+  // Re-check before admitting: a commit during render (gzip
+  // await, another process) must not file a pre-commit render
+  // under the new generation. The bytes are still served; they
+  // just aren't cached.
+  if (pageGeneration() === ticket.generation) writePage(ticket.key, html);
 }
 export function userData(user: Row | null | undefined) {
   if (!user) return { ID: 0, Role: 0, Name: "" };

@@ -17,6 +17,7 @@ import {
 import { registerStorage } from "./storage.ts";
 import { registerPublic, avatarPayload } from "./public.ts";
 import { cacheLimitMb } from "./rendering.ts";
+import { pageGeneration } from "./db.ts";
 import { registerOpengraph } from "./opengraph.ts";
 import { allowLogin } from "./rate_limit.ts";
 import { cableWs, startCablePing } from "./cable.ts";
@@ -98,6 +99,25 @@ function toElysiaPath(p: string): string {
   // /a/:p1-:p2 composite segments are unsupported; only our botKey route uses them.
   out = out.replace(/\/:(\w+)-:(\w+)/g, "/*");
   return out;
+}
+
+// Cache eligibility mirrors Rust's eligible_request: only
+// plain GET/HEAD without Range/Upgrade or no-cache directives
+// may read or populate the shared page cache.
+function eligibleForPageCache(request: Request): boolean {
+  if (request.method !== "GET" && request.method !== "HEAD") return false;
+  if (request.headers.has("range") || request.headers.has("upgrade"))
+    return false;
+  const pragma = request.headers.get("pragma");
+  if (pragma?.toLowerCase() === "no-cache") return false;
+  const cacheControl = request.headers.get("cache-control");
+  if (cacheControl) {
+    for (const directive of cacheControl.split(",")) {
+      const name = directive.trim().split("=")[0]?.toLowerCase();
+      if (name === "no-cache" || name === "no-store") return false;
+    }
+  }
+  return true;
 }
 
 export function createApp() {
@@ -214,6 +234,15 @@ export function createApp() {
 
   async function runHandlers(ctx: ElysiaContext, handlers: Array<Handler | Middleware>, origPath: string) {
     const request: Request = ctx.request;
+    // Write generation captured BEFORE auth (PERF-22, mirrors
+    // Rust's pre-auth Snapshot): a revocation landing mid-auth
+    // must not serve a cached page. One PRAGMA on the read-only
+    // observer (~2µs); GET/HEAD only, cache-eligible requests
+    // only. buildReq() below runs auth (cookie decrypt, session
+    // + user SELECTs) — those always run, like Rust's fresh auth.
+    const generation = eligibleForPageCache(request)
+      ? pageGeneration()
+      : undefined;
     // Body: Elysia already parsed it into ctx.body (json/form/multipart).
     // Only raw-upload routes need the untouched bytes.
     let rawBody: Buffer | undefined = undefined;
@@ -237,6 +266,7 @@ export function createApp() {
     let remote = "";
     try { remote = String((elysia.server?.requestIP?.(request) as { address?: unknown } | undefined)?.address || ""); } catch {}
     const req = buildReq({ request, params: ctx.params, query: ctx.query }, parsed, remote);
+    if (generation !== undefined) (req as any).generation = generation;
     // botKey composite segment fallback: /rooms/:roomId/* -> split botKey/messages...
     if (req.params["*"] !== undefined && origPath.includes("/:botKey/")) {
       const rest = String(req.params["*"] ?? "").split("/");
