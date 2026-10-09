@@ -63,7 +63,14 @@ export function db(): Database {
 }
 // bun:sqlite binds scalars (string/number/bigint/boolean/null/typed array).
 type Param = SQLQueryBindings;
+// Monotonic statement counter for perf tests (mirrors Express db.js):
+// creation-path tests assert a bounded number of queries.
+let queries = 0;
+export function queryCount(): number {
+  return queries;
+}
 export function all(sql: string, ...params: Param[]): Row[] {
+  queries++;
   return db()
     .query(sql)
     .all(...params) as Row[];
@@ -71,12 +78,14 @@ export function all(sql: string, ...params: Param[]): Row[] {
 export function get(sql: string, ...params: Param[]): Row | undefined {
   // bun:sqlite returns `null` for missing rows; node:sqlite
   // returned `undefined`. Normalize so callers see one contract.
+  queries++;
   const row = db()
     .query(sql)
     .get(...params) as Row | null | undefined;
   return row ?? undefined;
 }
 export function run(sql: string, ...params: Param[]): RunResult {
+  queries++;
   return db()
     .query(sql)
     .run(...params) as unknown as RunResult;

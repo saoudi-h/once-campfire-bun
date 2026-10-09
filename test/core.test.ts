@@ -8,13 +8,13 @@ import type { CompatReq } from "../src/compat.ts";
 process.env.SECRET_KEY_BASE = "core-test-secret-".repeat(8);
 const temp = mkdtempSync(join(tmpdir(), "campfire-express-core-"));
 process.env.CAMPFIRE_STORAGE_PATH = temp;
-const { all, get, run, transaction, initialize, now } =
+const { all, get, run, transaction, initialize, now, queryCount } =
   await import("../src/db.ts");
 const domain = await import("../src/domain.ts");
 const { plainText, sanitize, mentionIds } = await import("../src/richtext.ts");
 const rails = await import("../src/rails.ts");
 const { serveApp } = await import("./helper.ts");
-const { fragment, render } = await import("../src/rendering.ts");
+const { fragment, render, messageFragment } = await import("../src/rendering.ts");
 let admin: Row, member: Row, outsider: Row, open: Row, privateRoom: Row;
 before(async () => {
   initialize();
@@ -142,6 +142,114 @@ test("updates replace FTS and deletes remove message and rich text", () => {
     ),
     undefined,
   );
+});
+test("creation avoids re-reading the rich-text id and stays within a query budget", () => {
+  const before = queryCount();
+  const m = domain.createMessage(
+    open.id,
+    admin.id,
+    "<p>Fish &amp; <strong>chips</strong> café</p>",
+  )!;
+  assert.ok(
+    queryCount() - before <= 8,
+    `creation executed ${queryCount() - before} queries`,
+  );
+  assert.equal(
+    get("SELECT body FROM message_search_index WHERE rowid=?", m.id)!.body,
+    "Fish & chips café",
+  );
+  assert.ok(
+    get(
+      "SELECT body FROM action_text_rich_texts WHERE record_type='Message' AND record_id=?",
+      m.id,
+    )!.body.includes("<strong>chips</strong>"),
+  );
+});
+test("creation failure rolls back message, rich text, index and unread state", () => {
+  const counts = () => [
+    get("SELECT count(*) AS n FROM messages")!.n,
+    get("SELECT count(*) AS n FROM action_text_rich_texts")!.n,
+    get("SELECT count(*) AS n FROM message_search_index")!.n,
+  ];
+  const before = counts();
+  const unread = get(
+    "SELECT unread_at FROM memberships WHERE room_id=? AND user_id=?",
+    open.id,
+    member.id,
+  )!.unread_at;
+  run(
+    "CREATE TEMP TRIGGER fail_unread BEFORE UPDATE OF unread_at ON memberships BEGIN SELECT RAISE(ABORT,'forced unread failure'); END",
+  );
+  try {
+    assert.throws(
+      () => domain.createMessage(open.id, admin.id, "rollback creation"),
+      /forced unread failure/,
+    );
+  } finally {
+    run("DROP TRIGGER fail_unread");
+  }
+  assert.deepEqual(counts(), before);
+  assert.equal(
+    get(
+      "SELECT unread_at FROM memberships WHERE room_id=? AND user_id=?",
+      open.id,
+      member.id,
+    )!.unread_at,
+    unread,
+  );
+});
+test("turbo poster reuses the broadcast fragment instead of rendering twice", async () => {
+  const { base, close } = await serveApp();
+  const server = { close: (cb: any) => { close().then(cb); } };
+  let cookie = "";
+  try {
+    let response = await fetch(base + "/session/new");
+    const html = await response.text();
+    const csrf = html.match(/name="csrf-token" content="([^"]+)"/)![1]!;
+    cookie = response.headers
+      .getSetCookie()
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    response = await fetch(base + "/session", {
+      method: "POST",
+      redirect: "manual",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        email_address: admin.email_address,
+        password: "password",
+        authenticity_token: csrf,
+      }),
+    });
+    assert.equal(response.status, 302);
+    cookie +=
+      "; " +
+      response.headers
+        .getSetCookie()
+        .map((c) => c.split(";")[0])
+        .join("; ");
+    response = await fetch(base + "/rooms/" + open.id + "/messages", {
+      method: "POST",
+      headers: {
+        cookie,
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "text/vnd.turbo-stream.html, text/html",
+      },
+      body: new URLSearchParams({
+        "message[body]": "<p>Posted &amp; <strong>rich</strong></p>",
+        authenticity_token: csrf,
+      }),
+    });
+    const body = await response.text();
+    assert.equal(response.status, 200, body);
+    assert.ok(body.includes("Posted &amp; <strong>rich</strong>"));
+    const posted = get("SELECT * FROM messages ORDER BY id DESC LIMIT 1")!;
+    const expected = String(
+      messageFragment(messageData([domain.messageById(posted.id)!])[0]!),
+    );
+    assert.ok(body.includes(`<template>${expected}</template>`));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 test("sanitize discards executable markup and unsafe URL schemes", () => {
   const html = sanitize(

@@ -668,7 +668,7 @@ export function registerRoutes(app: RouteCollector) {
         if (json)
           return res
             .status(201)
-            .json(serializeMessage(messageById(message!.id)!, req));
+            .json(serializeMessage(message!, req));
         return turbo(
           res,
           "append",
