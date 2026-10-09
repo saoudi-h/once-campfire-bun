@@ -18,9 +18,11 @@ Rust; sidebar/post/cable remain (see `.autonomos/TASKS.md`).
 ## ⚙️ Workflow & Preferences
 
 - **Runtime:** Bun only (`bun <file>`, `bun test`, `bun install`). Never
-  `node`, `npm`, `npx`, dotenv (Bun loads `.env`). Verify the runtime
-  with `bun --revision`: bare `bun --version` prints `1.4.3` even for
-  canary builds (e.g. `1.4.3-canary.1`).
+  `node`, `npm`, `npx`, dotenv (Bun loads `.env`). Canary channel:
+  1.4.2 stable breaks `Bun.spawn` child stdout when compiling
+  (writer IPC + workers). Verify the runtime with `bun --revision`:
+  bare `bun --version` prints `1.4.3` even for canary builds
+  (e.g. `1.4.3-canary.1`).
 - **Tests:** `bun bin/test.js` (one `bun test` process per file: each
   sets its own `process.env.DATABASE_PATH`). Single file:
   `bun test test/<name>.test.ts`. Full green + `bun run typecheck`
@@ -40,6 +42,14 @@ Rust; sidebar/post/cable remain (see `.autonomos/TASKS.md`).
   runs. The runner fails closed: a completed run means all
   contracts + write audits passed.
 - **Language:** English for artifacts, French with the user.
+- **Public text:** README, PR bodies, and commit messages go through
+  the `stop-slop` skill before publishing (no adverbs, no em
+  dashes, no vague declaratives, name the actor). Write for a
+  reader with no context: state what the thing is and why it
+  exists before details. State a disclaimer or framing once, not
+  in every text. Self-review before publishing: check every fact
+  (versions, pins, counts, links), check the reproduce steps
+  actually run, and check published docs agree with each other.
 - **Protocol:** Autonomos (`.autonomos/PROTOCOL.md`). TASKS.md owns task
   state; worklog per session work; `/task` plan before code.
 

@@ -58,12 +58,22 @@ it measures, so a completed run also means this port answered with
 the same bytes, statuses, and database writes as the reference
 application.
 
-To reproduce: clone this repo next to `once-campfire-verification`,
-build the seed with `bin/seed`, build the image, and run
-`compare.rb --apps rust,elysia` with `WEB_WORKERS=4` in
-`ELYSIA_BENCH_ENV`. The local interleaved A/B protocol and the
-CPU/RAM scaling scripts live in `docs/BENCHMARKS.md`. The adapter
-for this port is proposed upstream in
+To reproduce the numbers:
+
+```bash
+git clone https://github.com/basecamp/once-campfire-verification.git
+git clone https://github.com/saoudi-h/once-campfire-bun.git ../once-campfire-elysia
+cd once-campfire-verification
+bin/seed
+docker build -t once-campfire-elysia:app ../once-campfire-elysia
+ELYSIA_BENCH_ENV='{"WEB_WORKERS":"4"}' bench/compare.rb \
+  --apps rust,elysia --rounds 3 --duration 8 \
+  --concurrencies 16 --cpus 8-11 --client-cpus 12-15
+```
+
+The local interleaved A/B protocol and the CPU/RAM scaling scripts
+live in `docs/BENCHMARKS.md`. The adapter for this port is proposed
+upstream in
 [verification#5](https://github.com/basecamp/once-campfire-verification/pull/5).
 
 ## What runs
@@ -78,6 +88,12 @@ protocols all run on the port. The items at the bottom list what
 does not.
 
 ## Develop
+
+The project builds and tests on the Bun canary channel
+(1.4.3-canary at the time of writing). Bun 1.4.2 stable breaks
+`Bun.spawn` child stdout when compiling, which the writer IPC and
+worker processes rely on. Install canary with
+`bun upgrade --canary`.
 
 ```bash
 git clone --recurse-submodules <this-repo>
