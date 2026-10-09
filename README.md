@@ -16,39 +16,47 @@ The port answers one question: how close does a JavaScript stack get
 to a Rust implementation of the same application? An AI agent built
 a Rust port of Campfire as the target, and both were measured with
 Basecamp's shared benchmark harness, on the same seed database and
-the same machine. The results are below.
+the same machine. This port passes Rust on the sidebar and search
+routes, reaches 0.95x on the room page, and writes at 0.64x. The
+results are below.
 
 ## Benchmarks
 
 Basecamp's shared harness (`basecamp/once-campfire-verification`)
-produced these numbers: an official seed database, 3 rounds of 8s
+produced these numbers: official seed `4bf9d0eb`, 3 rounds of 8s
 each at 16 concurrent clients, the server pinned to CPUs 8-11 and
 the load generator to 12-15, both applications running on one
 machine, with medians taken across the rounds.
 
 | route | rust rps | this port | ratio |
 |---|---|---|---|
-| room_show | 35122 | 26718 | 0.76x |
-| messages_page | 33952 | 17520 | 0.52x |
-| sidebar | 38523 | 33355 | 0.87x |
-| search | 33777 | 33466 | 0.99x |
-| avatar | 139373 | 117972 | 0.85x |
-| static_css | 150494 | 249698 | 1.66x |
-| up | 59563 | 269202 | 4.5x |
-| post_message | 2590 | 1836 | 0.71x |
+| room_show | 34278 | 32726 | 0.95x |
+| messages_page | 33076 | 23908 | 0.72x |
+| sidebar | 38810 | 43393 | 1.12x |
+| search | 38848 | 41926 | 1.08x |
+| avatar | 151234 | 115830 | 0.77x |
+| static_css | 132788 | 223929 | 1.69x |
+| up | 57080 | 273850 | 4.80x |
+| post_message | 3086 | 1960 | 0.64x |
 
-`room_show` and `messages_page` ship the heaviest responses in the
-app (~500KB of HTML each), and moving that many bytes costs more in
-JS than in Rust. Sidebar and search match Rust because of the
-whole-response cache: a read-only `PRAGMA data_version` observer
-bumps a generation counter on any database commit, page cache keys
-carry that generation, and the route handlers skip the version
-queries they used to run per lookup. `post_message` runs at 0.71x
-because `bun:sqlite` holds one synchronous connection per process,
-capping writes at a single transaction, so plain posts route through
-a dedicated writer child. `static_css` and `up` measure the
-framework floor rather than application code: Elysia's native routes
-and an in-memory asset cache answer them.
+This port passes Rust on sidebar and search, sits at 0.95x on the
+room page and 0.72x on messages, and writes at 0.64x. The
+whole-response cache does the reading work: a read-only
+`PRAGMA data_version` observer bumps a generation counter on any
+database commit, page cache keys carry that generation, and the
+route handlers skip the version queries they used to run per
+lookup. A per-process session cache, invalidated by the same
+observer, removes the cookie verification and the auth SELECTs
+from the request path. The room and messages pages still trail
+because each response ships ~500KB of rendered HTML, which costs
+more in JS than in Rust.
+
+`post_message` runs at 0.64x because `bun:sqlite` holds one
+synchronous connection per process, capping writes at a single
+transaction, so plain posts route through a dedicated writer
+child (ADR-001). `static_css`, `up` and `avatar` are native
+Elysia routes that never enter the compat pipeline; they measure
+the framework floor rather than application code.
 
 Compare ratios within a single run. The machine sets the absolute
 numbers, and those change between runs.
