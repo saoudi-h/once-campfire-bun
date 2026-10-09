@@ -1,5 +1,9 @@
 # Benchmarks
 
+> The numbers below come from the Rust port's local harness
+> (interleaved A/B on this host). The official shared-harness
+> numbers live in the README; quote those.
+
 Compare two deployments on one host with these numbers. Do not
 compare absolutes across hosts.
 

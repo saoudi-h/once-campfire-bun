@@ -10,17 +10,20 @@ MIT. I drew the templates, asset build, and compat contracts from
 the public Rails app. Vendored frontend assets keep their own
 licenses.
 
-One Bun process replaces the Ruby/Node stack. Set `WEB_WORKERS>1`
-and you get a master (jobs, cable fanout, writer supervision) plus
-HTTP workers on one port through `SO_REUSEPORT`, with a dedicated
-SQLite writer child for message posts.
+One Bun process replaces the Ruby/Node stack. Set `WEB_WORKERS`
+above 1 and you get a master (jobs, cable fanout, writer
+supervision) plus HTTP workers on one port through `SO_REUSEPORT`,
+with a dedicated SQLite writer child for message posts.
 
 ## Status
 
-Run the same hot reads against the same seed on one machine and
-this port matches the agent-built Rust port or passes it. Rust
-leads on writes, Cable fan-out, avatar serving, and memory. Read
-`docs/BENCHMARKS.md` for method, numbers, and caveats.
+With Basecamp's shared harness, on the same seed and machine
+(numbers below), this port matches Rust on sidebar, search,
+avatar, and the static and health routes. The room page runs at
+0.76x Rust and the messages page at 0.52x: both ship ~500KB of
+rendered HTML per request, which costs more in JS than in Rust.
+Posts run at 0.71x behind the single-writer SQLite design
+(ADR-001).
 
 ## Develop
 
@@ -71,25 +74,38 @@ Small servers: cap memory with `CAMPFIRE_CACHE_MB`
 
 ## Benchmarks (official harness)
 
-Measured with the shared verification harness
-(`basecamp/once-campfire-verification`): official seed `4bf9d0eb`,
-3 rounds, 8s samples, 16 clients, server CPUs 8-11, loadgen CPUs
-12-15, both apps on the same host, medians. Elysia vs Rust:
+Basecamp's shared harness (`basecamp/once-campfire-verification`)
+produced these: official seed `4bf9d0eb`, 3 rounds of 8s at 16
+clients, server pinned to CPUs 8-11 and loadgen to 12-15, both apps
+on one machine, medians. Compare within a run; the host sets the
+absolute numbers.
 
-| route | rust rps | elysia rps | ratio |
+| route | rust rps | elysia rps | elysia / rust |
 |---|---|---|---|
-| room_show | 35122 | 26718 | 76% |
-| messages_page | 33952 | 17520 | 52% |
-| sidebar | 38523 | 33355 | 87% |
-| search | 33777 | 33466 | 99% |
-| avatar | 139373 | 117972 | 85% |
-| static_css | 150494 | 249698 | 166% |
-| up | 59563 | 269202 | 452% |
-| post_message | 2590 | 1836 | 71% |
+| room_show | 35122 | 26718 | 0.76x |
+| messages_page | 33952 | 17520 | 0.52x |
+| sidebar | 38523 | 33355 | 0.87x |
+| search | 33777 | 33466 | 0.99x |
+| avatar | 139373 | 117972 | 0.85x |
+| static_css | 150494 | 249698 | 1.66x |
+| up | 59563 | 269202 | 4.5x |
+| post_message | 2590 | 1836 | 0.71x |
 
-Reads at or near Rust parity; writes bounded by the single-writer
-IPC ceiling (ADR-001); micro-routes dominated by Elysia native
-routes and the in-memory asset cache. Absolute numbers are
-host-specific — the ratios within one run are the comparison.
-The elysia adapter is proposed upstream in
+Sidebar and search match Rust with the whole-response cache: a
+read-only `PRAGMA data_version` observer bumps a generation on any
+commit, page keys carry that generation, and the route handlers
+skip the version queries they used to run per lookup. Room and
+messages pages trail because each request ships ~500KB of rendered
+HTML. The write path runs at 0.71x because `bun:sqlite` holds one
+synchronous connection per process, capping writes at ~1
+transaction, so plain posts route through a dedicated writer
+child. `static_css` and `up` measure the framework floor, not app
+code.
+
+To reproduce: clone this repo next to `once-campfire-verification`,
+build the seed with `bin/seed`, build the image, and run
+`compare.rb --apps rust,elysia` with `WEB_WORKERS=4` in
+`ELYSIA_BENCH_ENV`. For the local interleaved A/B protocol and
+CPU/RAM scaling scripts, see `docs/BENCHMARKS.md`. The adapter for
+this port is proposed upstream in
 [verification#5](https://github.com/basecamp/once-campfire-verification/pull/5).
