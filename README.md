@@ -68,3 +68,28 @@ Small servers: cap memory with `CAMPFIRE_CACHE_MB`
 - `bun:sqlite` is synchronous with one connection per process:
   write throughput is ~1 transaction; plain posts go through the
   single writer (see `.autonomos/decisions/ADR-001-*`).
+
+## Benchmarks (official harness)
+
+Measured with the shared verification harness
+(`basecamp/once-campfire-verification`): official seed `4bf9d0eb`,
+3 rounds, 8s samples, 16 clients, server CPUs 8-11, loadgen CPUs
+12-15, both apps on the same host, medians. Elysia vs Rust:
+
+| route | rust rps | elysia rps | ratio |
+|---|---|---|---|
+| room_show | 35122 | 26718 | 76% |
+| messages_page | 33952 | 17520 | 52% |
+| sidebar | 38523 | 33355 | 87% |
+| search | 33777 | 33466 | 99% |
+| avatar | 139373 | 117972 | 85% |
+| static_css | 150494 | 249698 | 166% |
+| up | 59563 | 269202 | 452% |
+| post_message | 2590 | 1836 | 71% |
+
+Reads at or near Rust parity; writes bounded by the single-writer
+IPC ceiling (ADR-001); micro-routes dominated by Elysia native
+routes and the in-memory asset cache. Absolute numbers are
+host-specific — the ratios within one run are the comparison.
+The elysia adapter is proposed upstream in
+[verification#5](https://github.com/basecamp/once-campfire-verification/pull/5).
