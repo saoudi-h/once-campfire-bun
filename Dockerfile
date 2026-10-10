@@ -1,7 +1,7 @@
-# Canary channel (PERF-21): A/B vs stable showed neutral throughput and
-# ~10% lower RSS on this host; the canary releases day-to-day and is
-# accepted as the production base. Revisit if a stable 1.4.3+ ships.
-FROM oven/bun:canary
+# Bun 1.4.3 stable (was canary since PERF-21: canary carried the
+# Bun.spawn stdout fix that 1.4.2 stable lacked; 1.4.3 ships it,
+# and the canary's ~10% RSS edge is under re-measurement).
+FROM oven/bun:1.4.3
 ARG REVISION=local
 LABEL org.opencontainers.image.revision=$REVISION
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg poppler-utils ca-certificates && rm -rf /var/lib/apt/lists/*
