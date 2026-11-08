@@ -1,27 +1,27 @@
 {
-  "name": "once-campfire-bun",
-  "module": "src/server.ts",
-  "type": "module",
-  "private": true,
-  "scripts": {
-    "test": "bun bin/test.js",
-    "typecheck": "bunx --package typescript tsc --noEmit -p .",
-    "autonomos": "autonomos"
-  },
-  "devDependencies": {
-    "@types/bun": "latest",
-    "@autonomos/cli": "^0.6.0"
-  },
-  "peerDependencies": {
-    "typescript": "^7"
-  },
-  "dependencies": {
-    "elysia": "2.0.0-beta.29",
-    "nunjucks": "^3.2.4",
-    "parse5": "^8.0.1",
-    "qrcode": "^1.5.4",
-    "sanitize-html": "^2.18.0",
-    "sharp": "^0.35.5",
-    "web-push": "^3.6.7"
-  }
+    "name": "once-campfire-bun",
+    "module": "src/server.ts",
+    "type": "module",
+    "private": true,
+    "scripts": {
+        "test": "bun bin/test.js",
+        "typecheck": "bunx --package typescript tsc --noEmit -p .",
+        "autonomos": "autonomos"
+    },
+    "devDependencies": {
+        "@types/bun": "latest",
+        "@autonomos/cli": "^0.7.1"
+    },
+    "peerDependencies": {
+        "typescript": "^7"
+    },
+    "dependencies": {
+        "elysia": "2.0.0-beta.29",
+        "nunjucks": "^3.2.4",
+        "parse5": "^8.0.1",
+        "qrcode": "^1.5.4",
+        "sanitize-html": "^2.18.0",
+        "sharp": "^0.35.5",
+        "web-push": "^3.6.7"
+    }
 }

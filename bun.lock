@@ -14,7 +14,7 @@
         "web-push": "^3.6.7",
       },
       "devDependencies": {
-        "@autonomos/cli": "^0.6.0",
+        "@autonomos/cli": "^0.7.1",
         "@types/bun": "latest",
       },
       "peerDependencies": {
@@ -23,9 +23,9 @@
     },
   },
   "packages": {
-    "@autonomos/cli": ["@autonomos/cli@0.6.0", "", { "dependencies": { "@autonomos/core": "0.6.0", "@inquirer/prompts": "^7.0.0", "commander": "^14.0.2", "picocolors": "1.1.1" }, "bin": { "autonomos": "dist/index.mjs" } }, "sha512-BiQxTP3dR2sStDoyCt86v3PMVMNj0xyrKbyi2fumRRwOVNYUyidGM56uUKDx6NmIL8vgexSBuv6uVoJx6HuqAQ=="],
+    "@autonomos/cli": ["@autonomos/cli@0.7.1", "", { "dependencies": { "@autonomos/core": "0.7.1", "@inquirer/prompts": "^7.0.0", "commander": "^14.0.2", "picocolors": "1.1.1" }, "bin": { "autonomos": "dist/index.mjs" } }, "sha512-iLVM3e84yF2/Whd5UBgV3IAv8+eV1dLsb3NJvEqtVRNtPgnJ6kAQPW7AmGBLyTSxvRremIQN9Wi+ru8Lzo6Y8g=="],
 
-    "@autonomos/core": ["@autonomos/core@0.6.0", "", { "dependencies": { "js-yaml": "4.1.0", "zod": "3.24.1" } }, "sha512-86f2QOZBQ7AfKRR/cTYXKALJ9Wx3CKYZhDO4pRM+gN/eTQlThbNlYXQP8zpyXefTCmgMsyH2J9yzkC2+LQdQHQ=="],
+    "@autonomos/core": ["@autonomos/core@0.7.1", "", { "dependencies": { "js-yaml": "4.1.0", "zod": "3.24.1" } }, "sha512-/mwX15gME4RLhxahb+qNlzDkWx9/hKMKz08UzQkgSL8AW0FAbLS56ppjcpnU3eLa+3C/RjJK7xNgehKG3oYSog=="],
 
     "@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
 
