@@ -1,6 +1,7 @@
 {
-    "protocolVersion": "0.7.0-alpha",
-    "cliVersion": "0.7.1",
+    "protocolVersion": "0.8.1-alpha",
+    "cliVersion": "0.8.1",
     "initializedAt": "2026-10-08T06:12:18.378Z",
-    "lastUpdated": "2026-11-08T14:47:20.717Z"
+    "lastUpdated": "2026-11-08T23:10:16.542Z",
+    "artifactFormat": 2
 }

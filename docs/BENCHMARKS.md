@@ -62,7 +62,7 @@ Two architecture notes before you read the table:
 
 HTTP req/s at 16 concurrent connections, Bun `WEB_WORKERS=4` vs
 Rust nominal, one host, one seed. Full per-rep tables with
-min-max: `.autonomos/worklogs/2026-10-08-PUBLISH-03.md`.
+min-max: `.autonomos/archive/worklogs-format-1/2026-10-08-PUBLISH-03.md`.
 
 | HTTP req/s, 16 clients (median of 3) | Bun | Rust | Bun adv. |
 |---|---|---|---|
@@ -109,7 +109,7 @@ Wire bytes (gzip negotiated) from the same runs:
 The sidebar size predates the AUDIT-01 parity fix (I restored
 placeholders, render the full page on plain GET, re-measured
 19,575 vs 16,963 i.e. 1.15x;
-`.autonomos/worklogs/2026-10-08-AUDIT-01.md`). The sidebar
+`.autonomos/archive/worklogs-format-1/2026-10-08-AUDIT-01.md`). The sidebar
 throughput above is the post-fix number; its size row needs a
 fresh run.
 
